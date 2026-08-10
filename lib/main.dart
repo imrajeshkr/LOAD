@@ -30,7 +30,7 @@ class LoadApp extends StatelessWidget {
       child: MaterialApp(
         title: 'LOAD',
         debugShowCheckedModeBanner: false,
-        theme: AppTheme.dark,
+        theme: AppTheme.light,
         home: const AuthGate(),
       ),
     );

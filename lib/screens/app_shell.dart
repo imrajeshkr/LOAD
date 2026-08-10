@@ -2,16 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/app_state.dart';
 import '../theme/app_colors.dart';
+import '../theme/app_theme.dart';
 import 'today/today_screen.dart';
-import 'today/log_screen.dart';
-import 'today/summary_screen.dart';
-import 'today/guide_overlay.dart';
 import 'progress/progress_screen.dart';
 import 'chat/chat_screen.dart';
 import 'settings/settings_screen.dart';
 
-enum _MainView { today, log, summary }
-
+/// Bottom-tab container.
+///
+/// Session flow (log / summary) and the form guide are pushed as real routes
+/// on top of this shell rather than being rendered as sibling states. That
+/// keeps the back stack honest and fixes the bug where the guide stayed
+/// visible after switching tabs.
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -20,94 +22,105 @@ class AppShell extends StatefulWidget {
 }
 
 class _AppShellState extends State<AppShell> {
-  int tabIndex = 0;
-  _MainView view = _MainView.today;
+  int _index = 0;
 
-  void goToLog() => setState(() => view = _MainView.log);
-  void goToSummary() => setState(() => view = _MainView.summary);
-  void goToToday() => setState(() {
-        view = _MainView.today;
-        tabIndex = 0;
-      });
+  static const _tabs = <_TabSpec>[
+    _TabSpec('Today', Icons.today_outlined, Icons.today_rounded),
+    _TabSpec('Progress', Icons.insights_outlined, Icons.insights_rounded),
+    _TabSpec('Coach', Icons.chat_bubble_outline_rounded, Icons.chat_bubble_rounded),
+    _TabSpec('Profile', Icons.person_outline_rounded, Icons.person_rounded),
+  ];
 
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-
-    final tabs = [
-      TodayScreen(onStartSession: goToLog, onOpenExercise: goToLog),
-      const ProgressScreen(),
-      const ChatScreen(),
-      const SettingsScreen(),
-    ];
-
-    Widget body;
-    if (view == _MainView.log) {
-      body = LogScreen(onBackToToday: goToToday, onFinish: goToSummary);
-    } else if (view == _MainView.summary) {
-      body = SummaryScreen(onDone: goToToday);
-    } else {
-      body = tabs[tabIndex];
-    }
-
     return Scaffold(
-      body: Stack(
-        children: [
-          SafeArea(bottom: false, child: body),
-          if (state.guideExerciseIndex != null) const GuideOverlay(),
-        ],
+      body: SafeArea(
+        bottom: false,
+        child: IndexedStack(
+          index: _index,
+          children: const [
+            TodayScreen(),
+            ProgressScreen(),
+            ChatScreen(),
+            SettingsScreen(),
+          ],
+        ),
       ),
-      bottomNavigationBar: view != _MainView.today
-          ? null
-          : _BottomTabBar(
-              index: tabIndex,
-              onSelect: (i) => setState(() => tabIndex = i),
-            ),
+      bottomNavigationBar: _BottomBar(
+        index: _index,
+        tabs: _tabs,
+        onSelect: (i) {
+          if (i == _index) return;
+          setState(() => _index = i);
+          // Progress reads from the DB; refresh when the user lands on it.
+          if (i == 1) context.read<AppState>().refreshProgress();
+        },
+      ),
     );
   }
 }
 
-class _BottomTabBar extends StatelessWidget {
-  final int index;
-  final ValueChanged<int> onSelect;
-  const _BottomTabBar({required this.index, required this.onSelect});
+class _TabSpec {
+  final String label;
+  final IconData icon;
+  final IconData activeIcon;
+  const _TabSpec(this.label, this.icon, this.activeIcon);
+}
 
-  static const _labels = ['TODAY', 'PROGRESS', 'CHAT', 'SETTINGS'];
+class _BottomBar extends StatelessWidget {
+  final int index;
+  final List<_TabSpec> tabs;
+  final ValueChanged<int> onSelect;
+
+  const _BottomBar({
+    required this.index,
+    required this.tabs,
+    required this.onSelect,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: AppColors.border)),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceAround,
-          children: List.generate(_labels.length, (i) {
-            final selected = i == index;
-            return GestureDetector(
-              onTap: () => onSelect(i),
-              behavior: HitTestBehavior.opaque,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _labels[i],
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.5,
-                      color: selected ? AppColors.textPrimary : AppColors.textTertiary,
-                    ),
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(top: BorderSide(color: AppColors.divider)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 62,
+          child: Row(
+            children: List.generate(tabs.length, (i) {
+              final selected = i == index;
+              final tab = tabs[i];
+              return Expanded(
+                child: InkWell(
+                  onTap: () => onSelect(i),
+                  borderRadius: BorderRadius.circular(AppRadii.card),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        selected ? tab.activeIcon : tab.icon,
+                        size: 23,
+                        color: selected ? AppColors.accent : AppColors.inactive,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        tab.label,
+                        style: TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                          fontSize: 10.5,
+                          color: selected ? AppColors.accent : AppColors.inactive,
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 5),
-                  Container(width: 20, height: 2, color: selected ? AppColors.accent : Colors.transparent),
-                ],
-              ),
-            );
-          }),
+                ),
+              );
+            }),
+          ),
         ),
       ),
     );
