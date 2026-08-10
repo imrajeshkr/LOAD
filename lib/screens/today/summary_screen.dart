@@ -2,12 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../services/app_state.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_theme.dart';
+import '../../widgets/app_widgets.dart';
 
-const _painParts = ['Shoulder', 'Elbow', 'Wrist', 'Knee', 'Back'];
+const _painParts = ['Shoulder', 'Elbow', 'Wrist', 'Knee', 'Lower back'];
+const _rpeLabels = {
+  1: 'Easy',
+  2: 'Comfortable',
+  3: 'Solid',
+  4: 'Hard',
+  5: 'All out',
+};
 
+/// Post-session reflection. RPE and pain are asked once here rather than
+/// per set — mid-workout attention is too short for extra taps.
 class SummaryScreen extends StatefulWidget {
-  final VoidCallback onDone;
-  const SummaryScreen({super.key, required this.onDone});
+  const SummaryScreen({super.key});
 
   @override
   State<SummaryScreen> createState() => _SummaryScreenState();
@@ -17,128 +27,187 @@ class _SummaryScreenState extends State<SummaryScreen> {
   final _notesCtrl = TextEditingController();
 
   @override
+  void dispose() {
+    _notesCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
+    final units = state.units;
+    final highlights = state.sessionHighlights;
 
-    int totalSets = 0, totalSetsTarget = 0;
-    double totalVolume = 0;
-    final highlights = <String>[];
-    for (var i = 0; i < state.exercises.length; i++) {
-      final ex = state.exercises[i];
-      totalSetsTarget += ex.setsTarget;
-      final sets = state.loggedSets[i] ?? [];
-      totalSets += sets.length;
-      for (final s in sets) {
-        totalVolume += s.weight * s.reps;
-      }
-      if (sets.isNotEmpty) {
-        final maxWeight = sets.map((s) => s.weight).reduce((a, b) => a > b ? a : b);
-        if (maxWeight > ex.startingWeight) {
-          highlights.add('${ex.name} — ${maxWeight.toStringAsFixed(0)} lb, up from ${ex.startingWeight.toStringAsFixed(0)} lb');
-        }
-      }
-    }
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('SESSION COMPLETE', style: TextStyle(color: AppColors.accent, fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0.6)),
-          const SizedBox(height: 8),
-          const Text('Push Day', style: TextStyle(color: AppColors.textPrimary, fontSize: 24, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(child: _StatTile(label: 'SETS', value: '$totalSets/$totalSetsTarget')),
-              const SizedBox(width: 10),
-              Expanded(child: _StatTile(label: 'VOLUME', value: '${totalVolume.toStringAsFixed(0)} lb')),
-            ],
-          ),
-          const SizedBox(height: 22),
-          if (highlights.isNotEmpty) ...[
-            const Text('HIGHLIGHTS', style: TextStyle(color: AppColors.textTertiary, fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
-            const SizedBox(height: 10),
-            ...highlights.map((h) => Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
-                  decoration: BoxDecoration(color: AppColors.positive.withValues(alpha: 0.15), border: Border.all(color: AppColors.positive), borderRadius: BorderRadius.circular(10)),
-                  child: Text('🏆 $h', style: const TextStyle(color: AppColors.positive, fontWeight: FontWeight.w600, fontSize: 12.5)),
-                )),
-            const SizedBox(height: 8),
-          ],
-          const Text('SESSION NOTES (OPTIONAL)', style: TextStyle(color: AppColors.textTertiary, fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _notesCtrl,
-            maxLines: 3,
-            decoration: const InputDecoration(hintText: 'e.g. felt strong today, bumped rest between sets'),
-          ),
-          const SizedBox(height: 22),
-          const Text('HOW DID TODAY FEEL OVERALL?', style: TextStyle(color: AppColors.textTertiary, fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
-          const SizedBox(height: 10),
-          Row(
-            children: List.generate(5, (i) {
-              final v = i + 1;
-              final selected = state.sessionRpe == v;
-              return Expanded(
-                child: GestureDetector(
-                  onTap: () => setState(() => state.sessionRpe = selected ? null : v),
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 6),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: selected ? AppColors.accent : Colors.transparent,
-                      border: Border.all(color: selected ? AppColors.accent : AppColors.border),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Text('$v', style: TextStyle(color: selected ? AppColors.accentOn : AppColors.textPrimary, fontWeight: FontWeight.w600)),
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  alignment: Alignment.center,
+                  decoration: const BoxDecoration(
+                    color: AppColors.positiveSoft,
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.check_rounded,
+                      color: AppColors.positive, size: 21),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Session complete',
+                          style: Theme.of(context).textTheme.headlineMedium),
+                      const Text(
+                        'Push Day',
+                        style: TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12.5,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              );
-            }),
-          ),
-          const SizedBox(height: 20),
-          const Text('ANYTHING HURT?', style: TextStyle(color: AppColors.textTertiary, fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: _painParts.map((p) {
-              final selected = state.sessionPain.contains(p);
-              return GestureDetector(
-                onTap: () => setState(() {
-                  if (selected) {
-                    state.sessionPain.remove(p);
-                  } else {
-                    state.sessionPain.add(p);
-                  }
-                }),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: selected ? AppColors.cautionBg : Colors.transparent,
-                    border: Border.all(color: selected ? AppColors.caution : AppColors.border),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(p, style: TextStyle(color: selected ? AppColors.caution : AppColors.textSecondary, fontWeight: FontWeight.w600, fontSize: 12)),
-                ),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 28),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: () {
-                state.sessionNotes = _notesCtrl.text.trim();
-                widget.onDone();
-              },
-              child: const Text('Done'),
+              ],
             ),
-          ),
-        ],
+            const SizedBox(height: 20),
+
+            Row(
+              children: [
+                Expanded(
+                  child: _StatTile(
+                    label: 'Sets',
+                    value: '${state.sessionSetsLogged}',
+                    caption: 'of ${state.sessionSetsTarget} planned',
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _StatTile(
+                    label: 'Volume',
+                    value: units.formatWeight(state.sessionVolumeKg),
+                    caption: 'total ${units.weightLabel} moved',
+                  ),
+                ),
+              ],
+            ),
+
+            if (highlights.isNotEmpty) ...[
+              const SizedBox(height: 22),
+              const SectionLabel('Highlights'),
+              for (final h in highlights)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: AppCard(
+                    color: AppColors.positiveSoft,
+                    child: Row(
+                      children: [
+                        const Icon(Icons.emoji_events_rounded,
+                            size: 17, color: AppColors.positive),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            h,
+                            style: const TextStyle(
+                              fontFamily: AppTheme.fontFamily,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12.5,
+                              height: 1.4,
+                              color: AppColors.positive,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+
+            const SizedBox(height: 22),
+            const SectionLabel('How did it feel overall?'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (var v = 1; v <= 5; v++)
+                  ChoiceChipButton(
+                    label: _rpeLabels[v]!,
+                    selected: state.sessionRpe == v,
+                    onTap: () => setState(
+                      () => state.sessionRpe = state.sessionRpe == v ? null : v,
+                    ),
+                  ),
+              ],
+            ),
+
+            const SizedBox(height: 22),
+            const SectionLabel('Anything hurt?'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final part in _painParts)
+                  ChoiceChipButton(
+                    label: part,
+                    selected: state.sessionPain.contains(part),
+                    selectedColor: AppColors.peach,
+                    selectedFg: AppColors.warning,
+                    onTap: () => setState(() {
+                      if (state.sessionPain.contains(part)) {
+                        state.sessionPain.remove(part);
+                      } else {
+                        state.sessionPain.add(part);
+                      }
+                    }),
+                  ),
+              ],
+            ),
+            if (state.sessionPain.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              SoftBanner(
+                message: "Noted — I'll ease off anything that loads your "
+                    "${state.sessionPain.join(', ').toLowerCase()} next session. "
+                    "If it's sharp or lingering, please get it looked at.",
+              ),
+            ],
+
+            const SizedBox(height: 22),
+            const SectionLabel('Notes (optional)'),
+            TextField(
+              controller: _notesCtrl,
+              maxLines: 3,
+              style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                color: AppColors.textBody,
+              ),
+              decoration: const InputDecoration(
+                hintText: 'e.g. felt strong, gym was busy so rest was short',
+              ),
+            ),
+
+            const SizedBox(height: 26),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () {
+                  state.sessionNotes = _notesCtrl.text.trim();
+                  state.finishSession('Push Day');
+                  Navigator.of(context).popUntil((r) => r.isFirst);
+                },
+                child: const Text('Done'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -147,19 +216,46 @@ class _SummaryScreenState extends State<SummaryScreen> {
 class _StatTile extends StatelessWidget {
   final String label;
   final String value;
-  const _StatTile({required this.label, required this.value});
+  final String caption;
+  const _StatTile({required this.label, required this.value, required this.caption});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
-      decoration: BoxDecoration(color: AppColors.surface, border: Border.all(color: AppColors.border), borderRadius: BorderRadius.circular(14)),
+    return AppCard(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(label, style: const TextStyle(color: AppColors.textTertiary, fontSize: 10, fontWeight: FontWeight.w600, letterSpacing: 0.5)),
+          Text(
+            label,
+            style: const TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontWeight: FontWeight.w700,
+              fontSize: 11.5,
+              color: AppColors.textSecondary,
+            ),
+          ),
           const SizedBox(height: 6),
-          Text(value, style: const TextStyle(color: AppColors.textPrimary, fontSize: 20, fontWeight: FontWeight.w700)),
+          Text(
+            value,
+            style: const TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontWeight: FontWeight.w800,
+              fontSize: 24,
+              height: 1.1,
+              color: AppColors.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            caption,
+            style: const TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontWeight: FontWeight.w600,
+              fontSize: 10.5,
+              color: AppColors.textFaint,
+            ),
+          ),
         ],
       ),
     );

@@ -1,12 +1,70 @@
+import 'units.dart';
+
+/// Maps between the human-readable option strings the onboarding and settings
+/// screens are built from, and the Postgres enum values the v2 schema stores.
+///
+/// The UI is the source of truth for the labels — these tables exist so that
+/// the screens can keep using them verbatim while the database gets proper
+/// enums. Keep them in sync with the option lists in
+/// `lib/screens/onboarding/onboarding_flow.dart` and
+/// `lib/screens/settings/settings_screen.dart`.
+class _Enum {
+  const _Enum._();
+
+  static const goal = {
+    'Build muscle': 'build_muscle',
+    'Lose fat': 'lose_fat',
+    'Recomposition': 'recomposition',
+    'General health': 'general_health',
+    'Strength': 'strength',
+  };
+
+  static const experience = {
+    'Beginner': 'beginner',
+    'Intermediate': 'intermediate',
+    'Advanced': 'advanced',
+  };
+
+  static const environment = {
+    'Commercial gym': 'commercial_gym',
+    'Home gym': 'home_gym',
+    'Bodyweight only': 'bodyweight_only',
+  };
+
+  static const split = {
+    'Push / Pull / Legs': 'push_pull_legs',
+    'Upper / Lower': 'upper_lower',
+    'Full body': 'full_body',
+    'No preference': 'no_preference',
+  };
+
+  /// db value -> display label. Unknown values fall through to null so a
+  /// schema addition shows as "unset" rather than as a raw enum string.
+  static String? label(Map<String, String> table, String? dbValue) {
+    if (dbValue == null) return null;
+    for (final e in table.entries) {
+      if (e.value == dbValue) return e.key;
+    }
+    return null;
+  }
+}
+
 class Profile {
+  /// Human-readable labels, exactly as chosen in the UI option lists.
   String? goal;
   String? experience;
   int daysPerWeek;
   String? environment;
   String? splitPref;
+
+  /// Free text, round-tripped through `user_constraints.label`.
   String injuries;
-  double? currentWeight;
-  double? targetWeight;
+
+  /// Stored in kilograms regardless of display preference.
+  double? currentWeightKg;
+  double? targetWeightKg;
+
+  UnitSystem units;
 
   Profile({
     this.goal,
@@ -15,61 +73,124 @@ class Profile {
     this.environment,
     this.splitPref,
     this.injuries = '',
-    this.currentWeight,
-    this.targetWeight,
+    this.currentWeightKg,
+    this.targetWeightKg,
+    this.units = UnitSystem.metric,
   });
 
-  factory Profile.fromMap(Map<String, dynamic> m) => Profile(
-        goal: m['goal'] as String?,
-        experience: m['experience'] as String?,
-        daysPerWeek: (m['days_per_week'] as int?) ?? 4,
-        environment: m['environment'] as String?,
-        splitPref: m['split_pref'] as String?,
-        injuries: (m['injuries'] as String?) ?? '',
-        currentWeight: (m['current_weight'] as num?)?.toDouble(),
-        targetWeight: (m['target_weight'] as num?)?.toDouble(),
+  /// Assembles a profile from the three tables it now lives across:
+  /// [preferences] (`user_preferences`), [training] (the current
+  /// `training_profiles` row, i.e. `valid_to is null`), plus the derived
+  /// bodyweight and injury text.
+  factory Profile.fromRows({
+    Map<String, dynamic>? preferences,
+    Map<String, dynamic>? training,
+    double? currentWeightKg,
+    String injuries = '',
+  }) =>
+      Profile(
+        goal: _Enum.label(_Enum.goal, training?['goal'] as String?),
+        experience: _Enum.label(_Enum.experience, training?['experience'] as String?),
+        daysPerWeek: (training?['days_per_week'] as int?) ?? 4,
+        environment: _Enum.label(_Enum.environment, training?['environment'] as String?),
+        splitPref: _Enum.label(_Enum.split, training?['split_preference'] as String?),
+        injuries: injuries,
+        currentWeightKg: currentWeightKg,
+        targetWeightKg: (training?['target_weight_kg'] as num?)?.toDouble(),
+        units: UnitSystem.fromId(preferences?['units'] as String?),
       );
 
-  Map<String, dynamic> toMap() => {
-        'goal': goal,
-        'experience': experience,
-        'days_per_week': daysPerWeek,
-        'environment': environment,
-        'split_pref': splitPref,
-        'injuries': injuries,
-        'current_weight': currentWeight,
-        'target_weight': targetWeight,
-      };
+  // ── enum values for the write side ───────────────────────────────────
+  String? get goalValue => goal == null ? null : _Enum.goal[goal];
+  String? get experienceValue => experience == null ? null : _Enum.experience[experience];
+  String? get environmentValue => environment == null ? null : _Enum.environment[environment];
+  String get splitPrefValue =>
+      (splitPref == null ? null : _Enum.split[splitPref]) ?? 'no_preference';
 
-  bool get isComplete => goal != null && experience != null && environment != null && splitPref != null;
+  /// The `training_profiles` payload. Null when the required enum columns
+  /// aren't all answered yet — the table declares them NOT NULL.
+  Map<String, dynamic>? toTrainingProfileMap() {
+    final g = goalValue, e = experienceValue, env = environmentValue;
+    if (g == null || e == null || env == null) return null;
+    return {
+      'goal': g,
+      'experience': e,
+      'environment': env,
+      'split_preference': splitPrefValue,
+      'days_per_week': daysPerWeek,
+      'target_weight_kg': targetWeightKg,
+    };
+  }
+
+  bool get isComplete =>
+      goal != null && experience != null && environment != null && splitPref != null;
+
+  /// Daily protein target in grams — 1.8 g per kg of bodyweight, a common
+  /// recommendation for people training for muscle. Falls back to a flat
+  /// target until a weigh-in exists.
+  int get proteinTargetG {
+    final kg = currentWeightKg;
+    if (kg == null || kg <= 0) return 120;
+    return (kg * 1.8).round();
+  }
 }
 
 class ExerciseSpec {
+  /// `exercises.id` — the catalog row this slot prescribes.
+  final String id;
   final String name;
   final int setsTarget;
   final int reps;
-  final double startingWeight;
+
+  /// Working weight in kilograms.
+  final double weightKg;
+
+  /// Joint slugs this movement loads, from `exercise_joints`.
   final List<String> joints;
 
+  /// Form cues from `exercise_cues`, in `position` order.
+  final List<String> cues;
+
   const ExerciseSpec({
+    required this.id,
     required this.name,
     required this.setsTarget,
     required this.reps,
-    required this.startingWeight,
+    required this.weightKg,
     this.joints = const [],
+    this.cues = const [],
   });
+
+  ExerciseSpec copyWith({
+    int? setsTarget,
+    int? reps,
+    double? weightKg,
+  }) =>
+      ExerciseSpec(
+        id: id,
+        name: name,
+        setsTarget: setsTarget ?? this.setsTarget,
+        reps: reps ?? this.reps,
+        weightKg: weightKg ?? this.weightKg,
+        joints: joints,
+        cues: cues,
+      );
+
+  String get setsLabel => '$setsTarget × $reps';
 }
 
 class LoggedSet {
-  final double weight;
+  /// Weight in kilograms.
+  final double weightKg;
   final int reps;
-  LoggedSet({required this.weight, required this.reps});
+  LoggedSet({required this.weightKg, required this.reps});
 }
 
 class WeightEntry {
-  final double weight;
+  /// Bodyweight in kilograms.
+  final double weightKg;
   final DateTime loggedAt;
-  WeightEntry({required this.weight, required this.loggedAt});
+  WeightEntry({required this.weightKg, required this.loggedAt});
 }
 
 class ProteinEntry {
@@ -86,54 +207,59 @@ class ChatMessage {
 
 class PendingLogRow {
   final String exerciseName;
-  final double weight;
+  final double weightKg;
   final int reps;
   final int sets;
-  PendingLogRow({required this.exerciseName, required this.weight, required this.reps, required this.sets});
+
+  /// Set when the coach resolved the name server-side. Confirming then writes
+  /// against this id rather than re-matching the display name, which can drift
+  /// if the plan changes between the proposal and the tap.
+  final String? exerciseId;
+
+  PendingLogRow({
+    required this.exerciseName,
+    required this.weightKg,
+    required this.reps,
+    required this.sets,
+    this.exerciseId,
+  });
+}
+
+/// One reply from the coach, plus whatever it wants the lifter to confirm.
+///
+/// [proposalId] non-null means the proposal is a durable row in
+/// `coach_proposals`, so confirming goes through the Edge Function and
+/// survives the app being killed. Null means it came from the offline
+/// fallback parser and is confirmed locally.
+class CoachTurn {
+  final String reply;
+  final String? proposalId;
+  final List<PendingLogRow> pending;
+
+  CoachTurn({required this.reply, this.proposalId, this.pending = const []});
 }
 
 class SessionHistoryEntry {
   final String label;
-  final String detail;
   final DateTime date;
-  SessionHistoryEntry({required this.label, required this.detail, required this.date});
+  final int setCount;
+  final double volumeKg;
+  SessionHistoryEntry({
+    required this.label,
+    required this.date,
+    this.setCount = 0,
+    this.volumeKg = 0,
+  });
 }
 
-/// Default push-day plan used until real plan-generation exists.
-const List<ExerciseSpec> defaultExercises = [
-  ExerciseSpec(name: 'Bench Press', setsTarget: 4, reps: 8, startingWeight: 135, joints: ['shoulder', 'wrist', 'elbow']),
-  ExerciseSpec(name: 'Overhead Press', setsTarget: 3, reps: 10, startingWeight: 65, joints: ['shoulder', 'elbow']),
-  ExerciseSpec(name: 'Incline DB Press', setsTarget: 3, reps: 12, startingWeight: 40, joints: ['shoulder']),
-  ExerciseSpec(name: 'Tricep Pushdown', setsTarget: 3, reps: 15, startingWeight: 35, joints: ['elbow']),
-];
+/// One point on a per-exercise strength trend.
+class StrengthPoint {
+  final DateTime date;
+  final double topSetKg;
+  StrengthPoint({required this.date, required this.topSetKg});
+}
 
-const Map<String, List<String>> formCues = {
-  'Bench Press': [
-    'Retract shoulder blades before unracking.',
-    'Bar path touches mid-chest, elbows around 45°.',
-    'Drive feet into the floor, keep hips on the bench.',
-    'Full lockout without flaring the elbows.',
-  ],
-  'Overhead Press': [
-    'Brace your core, ribs down before pressing.',
-    'Bar starts at collarbone, path just in front of your face.',
-    'Lock out overhead, biceps by your ears.',
-    'Avoid excessive lower-back arch.',
-  ],
-  'Incline DB Press': [
-    'Bench at 30-45°, dumbbells at chest level.',
-    'Elbows around 45° from torso, not flared to 90°.',
-    'Press up and slightly in, control the descent.',
-    "Avoid bouncing the dumbbells off your chest.",
-  ],
-  'Tricep Pushdown': [
-    'Elbows pinned to your sides throughout.',
-    'Full extension without locking out aggressively.',
-    "Control the eccentric, don't let the bar fly up.",
-    'Keep torso upright, no leaning into it.',
-  ],
-};
-
+/// Fallback shown when a catalog exercise has no `exercise_cues` rows.
 const List<String> defaultCues = [
   'Move with control through the full range of motion.',
   'Keep the target muscle under tension throughout.',
