@@ -26,6 +26,10 @@ class AppState extends ChangeNotifier {
   List<ExerciseSpec> exercises = [];
   SessionTotals? sessionNow;
   SessionTotals? sessionLast;
+  DateTime? sessionStartedAt;
+
+  /// What's scheduled after today — only populated once [sessionComplete].
+  NextSessionPreview? nextSession;
 
   /// Swap suggestions for the loaded plan, keyed by the exercise name they
   /// replace. Sourced from `exercise_alternatives`, prefetched so the Swap
@@ -88,20 +92,40 @@ class AppState extends ChangeNotifier {
     await _guard('plan', _loadTodayPlan);
 
     await Future.wait([
-      _guard('weigh-ins', () async => weightLog = await _service.fetchWeightLog()),
-      _guard('protein', () async => proteinLog = await _service.fetchProteinLog()),
+      _guard(
+        'weigh-ins',
+        () async => weightLog = await _service.fetchWeightLog(),
+      ),
+      _guard(
+        'protein',
+        () async => proteinLog = await _service.fetchProteinLog(),
+      ),
       _guard('protein target', _syncAndFetchProteinTarget),
-      _guard('sessions', () async => sessionHistory = await _service.fetchSessionHistory()),
-      _guard('chat', () async => chatMessages = await _service.fetchChatHistory()),
-      _guard('exercises', () async => trackedExercises = await _service.fetchLoggedExerciseNames()),
-      _guard('training days', () async => trainingDays = await _service.fetchTrainingDays()),
+      _guard(
+        'sessions',
+        () async => sessionHistory = await _service.fetchSessionHistory(),
+      ),
+      _guard(
+        'chat',
+        () async => chatMessages = await _service.fetchChatHistory(),
+      ),
+      _guard(
+        'exercises',
+        () async =>
+            trackedExercises = await _service.fetchLoggedExerciseNames(),
+      ),
+      _guard(
+        'training days',
+        () async => trainingDays = await _service.fetchTrainingDays(),
+      ),
     ]);
 
     if (chatMessages.isEmpty) {
       chatMessages = [
         ChatMessage(
           sender: 'coach',
-          body: "Morning. I'm your coach — ask me anything, or just tell me what "
+          body:
+              "Morning. I'm your coach — ask me anything, or just tell me what "
               "you did after training and I'll log it for you.",
         ),
       ];
@@ -110,7 +134,9 @@ class AppState extends ChangeNotifier {
     if (trackedExercises.isNotEmpty) {
       selectedTrendExercise = trackedExercises.first;
       await _guard('strength trend', () async {
-        strengthTrend = await _service.fetchStrengthTrend(selectedTrendExercise!);
+        strengthTrend = await _service.fetchStrengthTrend(
+          selectedTrendExercise!,
+        );
       });
     }
 
@@ -128,10 +154,13 @@ class AppState extends ChangeNotifier {
       plan = await _service.fetchTodayPlan();
     }
     _applyPlan(plan);
+    await _maybeLoadNextSession();
 
     _alternatives = {};
     if (plan.exercises.isNotEmpty) {
-      final byId = await _service.fetchAlternatives(plan.exercises.map((e) => e.id).toList());
+      final byId = await _service.fetchAlternatives(
+        plan.exercises.map((e) => e.id).toList(),
+      );
       _alternatives = {
         for (final ex in plan.exercises)
           if (byId[ex.id] != null) ex.name: byId[ex.id]!,
@@ -145,6 +174,19 @@ class AppState extends ChangeNotifier {
   Future<void> _refreshTodayPlan() async {
     final plan = await _service.fetchTodayPlan();
     _applyPlan(plan);
+    await _maybeLoadNextSession();
+  }
+
+  /// The "Up next" card only shows once today's session is done, so there's
+  /// no reason to carry stale or fetch unneeded next-day data otherwise.
+  Future<void> _maybeLoadNextSession() async {
+    if (!sessionComplete) {
+      nextSession = null;
+      return;
+    }
+    await _guard('next session', () async {
+      nextSession = await _service.fetchNextSessionPreview();
+    });
   }
 
   void _applyPlan(TodayPlan plan) {
@@ -156,6 +198,7 @@ class AppState extends ChangeNotifier {
     exercises = plan.exercises;
     sessionNow = plan.sessionNow;
     sessionLast = plan.sessionLast;
+    sessionStartedAt = plan.sessionStartedAt;
     sessionComplete = plan.sessionStatus == 'completed';
     if (exercises.isEmpty) {
       currentExerciseIndex = 0;
@@ -215,7 +258,10 @@ class AppState extends ChangeNotifier {
   // ── weigh-in / protein ───────────────────────────────────────────────
   Future<void> logWeight(double weightKg) async {
     await _service.logWeight(weightKg);
-    weightLog = [...weightLog, WeightEntry(weightKg: weightKg, loggedAt: DateTime.now())];
+    weightLog = [
+      ...weightLog,
+      WeightEntry(weightKg: weightKg, loggedAt: DateTime.now()),
+    ];
     profile.currentWeightKg = weightKg;
     notifyListeners();
     await _service.saveProfile(profile);
@@ -226,7 +272,10 @@ class AppState extends ChangeNotifier {
 
   Future<void> logProtein(int grams) async {
     await _service.logProtein(grams);
-    proteinLog = [...proteinLog, ProteinEntry(grams: grams, loggedAt: DateTime.now())];
+    proteinLog = [
+      ...proteinLog,
+      ProteinEntry(grams: grams, loggedAt: DateTime.now()),
+    ];
     notifyListeners();
   }
 
@@ -252,7 +301,8 @@ class AppState extends ChangeNotifier {
     var cursor = DateTime.now();
     cursor = DateTime(cursor.year, cursor.month, cursor.day);
     // Today not being logged yet shouldn't break yesterday's streak.
-    if (!days.contains(cursor)) cursor = cursor.subtract(const Duration(days: 1));
+    if (!days.contains(cursor))
+      cursor = cursor.subtract(const Duration(days: 1));
     while (days.contains(cursor)) {
       streak++;
       cursor = cursor.subtract(const Duration(days: 1));
@@ -298,14 +348,16 @@ class AppState extends ChangeNotifier {
   }
 
   int loggedCount(int index) => exercises[index].setsLoggedToday;
-  bool exerciseDone(int index) => exercises[index].progress == SetProgress.complete;
+  bool exerciseDone(int index) =>
+      exercises[index].progress == SetProgress.complete;
 
   int get totalDone =>
       exercises.where((e) => e.progress == SetProgress.complete).length;
 
   double get sessionVolumeKg => sessionNow?.volumeKg ?? 0;
   int get sessionSetsLogged => sessionNow?.setCount ?? 0;
-  int get sessionSetsTarget => exercises.fold(0, (sum, ex) => sum + ex.setsTarget);
+  int get sessionSetsTarget =>
+      exercises.fold(0, (sum, ex) => sum + ex.setsTarget);
 
   /// The session-level result line: "Push Day · 2,475 kg · +155 vs last time".
   /// Null until there's both a session in progress and a prior one to compare.
@@ -313,6 +365,140 @@ class AppState extends ChangeNotifier {
     final now = sessionNow, last = sessionLast;
     if (now == null || last == null) return null;
     return now.volumeKg - last.volumeKg;
+  }
+
+  // ── Today hero card ──────────────────────────────────────────────────
+  // "Touched today" (>=1 set logged), not "hit target" — the hero card's job
+  // is showing momentum through the session, not grading it.
+
+  int get heroLoggedCount =>
+      exercises.where((e) => e.setsLoggedToday > 0).length;
+  bool get heroAnyLogged => heroLoggedCount > 0;
+
+  /// 0–1 fraction of exercises touched today, for the progress ring.
+  double get heroProgress =>
+      exercises.isEmpty ? 0 : heroLoggedCount / exercises.length;
+
+  String get heroCta => !heroAnyLogged
+      ? 'Start ${planLabel ?? 'session'}'
+      : 'Continue · ${exercises.length - heroLoggedCount} of ${exercises.length} left';
+
+  String get momentumLine => heroAnyLogged
+      ? '$trainingStreak-day streak · $heroLoggedCount of ${exercises.length} done today'
+      : '$trainingStreak-day streak · $sessionsThisWeek session'
+            '${sessionsThisWeek == 1 ? '' : 's'} this week';
+
+  String get heroCompleteStats =>
+      '$sessionSetsLogged sets · ${units.formatWeightWithUnit(sessionVolumeKg)}';
+
+  /// Per-exercise rows for the completed-session breakdown: what was done,
+  /// and how it compares to the same exercise's last session — the number a
+  /// lifter actually wants ("same as last" vs a real PR), not just a total.
+  List<({String name, String detail, String delta, DeltaTone tone})>
+  get sessionBreakdown {
+    final out =
+        <({String name, String detail, String delta, DeltaTone tone})>[];
+    for (final ex in exercises) {
+      final today = ex.today;
+      if (today == null || today.sets.isEmpty) continue;
+
+      final detail = _setsLabel(ex, today.sets);
+      var delta = 'Same as last';
+      var tone = DeltaTone.neutral;
+
+      if (today.sets.length < ex.setsTarget) {
+        delta = '${ex.setsTarget - today.sets.length} set short';
+        tone = DeltaTone.warning;
+      } else if (ex.isBodyweight) {
+        final last = ex.last;
+        if (last == null) {
+          delta = 'First time logged';
+        } else {
+          final d = today.totalReps - last.totalReps;
+          if (d > 0) {
+            delta = '+$d reps';
+            tone = DeltaTone.positive;
+          } else if (d < 0) {
+            delta = '$d reps';
+          }
+        }
+      } else {
+        final last = ex.last;
+        final topToday = today.sets
+            .map((s) => s.weightKg)
+            .reduce((a, b) => a > b ? a : b);
+        if (last == null || last.sets.isEmpty) {
+          delta = 'First time logged';
+        } else {
+          final topLast = last.sets
+              .map((s) => s.weightKg)
+              .reduce((a, b) => a > b ? a : b);
+          final d = topToday - topLast;
+          if (d > 0) {
+            delta = '+${units.formatWeightWithUnit(d)}';
+            tone = DeltaTone.positive;
+          } else if (d < 0) {
+            delta = units.formatWeightWithUnit(d);
+          }
+        }
+      }
+
+      out.add((name: ex.name, detail: detail, delta: delta, tone: tone));
+    }
+    return out;
+  }
+
+  int get skippedExerciseCount =>
+      exercises.where((e) => e.today == null || e.today!.sets.isEmpty).length;
+
+  /// "4 × 82 kg × 10", or a per-set breakdown when the sets weren't uniform —
+  /// mirrors how the log sheet itself describes a batch.
+  String _setsLabel(ExerciseSpec ex, List<LoggedSet> sets) {
+    if (sets.isEmpty) return '';
+    final sameW = sets.every((s) => s.weightKg == sets.first.weightKg);
+    final sameR = sets.every((s) => s.reps == sets.first.reps);
+
+    if (ex.isBodyweight) {
+      return sameR
+          ? '${sets.length} × ${sets.first.reps}'
+          : sets.map((s) => '${s.reps}').join(' · ');
+    }
+    if (sameW && sameR) {
+      return '${sets.length} × ${units.formatWeightWithUnit(sets.first.weightKg, decimals: 1)}'
+          ' × ${sets.first.reps}';
+    }
+    if (sameW) {
+      return '${units.formatWeightWithUnit(sets.first.weightKg, decimals: 1)} · '
+          '${sets.map((s) => '${s.reps}').join(', ')}';
+    }
+    if (sameR) {
+      return '${sets.first.reps} reps · '
+          '${sets.map((s) => units.formatWeight(s.weightKg, decimals: 1)).join(', ')} '
+          '${units.weightLabel}';
+    }
+    return sets
+        .map((s) => '${units.formatWeight(s.weightKg, decimals: 1)}×${s.reps}')
+        .join(' · ');
+  }
+
+  // ── weigh-in nudge ───────────────────────────────────────────────────
+  /// Days since the last weigh-in, or null if there isn't one yet.
+  int? get daysSinceWeighIn {
+    if (weightLog.isEmpty) return null;
+    final last = weightLog.last.loggedAt;
+    final today = DateTime.now();
+    return DateTime(
+      today.year,
+      today.month,
+      today.day,
+    ).difference(DateTime(last.year, last.month, last.day)).inDays;
+  }
+
+  /// People weigh in roughly weekly, not daily — nudge once it's been a
+  /// while rather than nagging every day the way the old inline row did.
+  bool get weighInNudgeDue {
+    final days = daysSinceWeighIn;
+    return days == null || days >= 5;
   }
 
   Future<void> startSession(String label) async {
@@ -359,16 +545,45 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> logSet(int exerciseIndex, double weightKg, int reps) async {
+  /// Writes the full set of work for one exercise from the log sheet,
+  /// replacing whatever was logged there before rather than appending to it.
+  ///
+  /// The log sheet always represents everything done on this movement today —
+  /// tapping "Edit" reopens it prefilled with what's already logged, and
+  /// re-confirming should overwrite, not stack a second batch on top. Rows
+  /// are `(weightKg, reps)` pairs, one per set.
+  Future<void> logExerciseSets(
+    int exerciseIndex,
+    List<(double, int)> rows,
+  ) async {
     final sessionId = currentSessionId;
-    if (sessionId == null || exerciseIndex >= exercises.length) return;
+    if (sessionId == null || exerciseIndex >= exercises.length || rows.isEmpty)
+      return;
 
     loggingSet = true;
     notifyListeners();
     try {
       final ex = exercises[exerciseIndex];
-      final setNumber = ex.setsLoggedToday + 1;
-      await _service.logSet(sessionId, ex.id, exerciseIndex + 1, setNumber, weightKg, reps);
+      final existing = await _service.fetchSetsForExercise(
+        sessionId,
+        ex.id,
+        exerciseIndex + 1,
+      );
+      for (final s in existing) {
+        await _service.deleteSet(s.id);
+      }
+      var setNumber = 0;
+      for (final row in rows) {
+        setNumber++;
+        await _service.logSet(
+          sessionId,
+          ex.id,
+          exerciseIndex + 1,
+          setNumber,
+          row.$1,
+          row.$2,
+        );
+      }
       await _refreshTodayPlan();
       if (exerciseIndex == currentExerciseIndex) {
         await loadSetsForCurrentExercise();
@@ -377,23 +592,6 @@ class AppState extends ChangeNotifier {
       loggingSet = false;
       notifyListeners();
     }
-  }
-
-  Future<void> updateSet(String setId, double weightKg, int reps) async {
-    await _service.updateSet(setId, weightKg: weightKg, reps: reps);
-    await _refreshTodayPlan();
-    await loadSetsForCurrentExercise();
-  }
-
-  Future<void> deleteSet(String setId) async {
-    await _service.deleteSet(setId);
-    await _refreshTodayPlan();
-    await loadSetsForCurrentExercise();
-  }
-
-  Future<void> undoLastLoggedSet() async {
-    if (currentExerciseSets.isEmpty) return;
-    await deleteSet(currentExerciseSets.last.id);
   }
 
   /// PRs for the just-finished session: today's heaviest set (or, for
@@ -407,22 +605,28 @@ class AppState extends ChangeNotifier {
 
       if (ex.isBodyweight) {
         if (last == null || today.totalReps > last.totalReps) {
-          out.add(last == null
-              ? '${ex.name} — ${today.totalReps} reps, first time logged'
-              : '${ex.name} — ${today.totalReps} reps, up from ${last.totalReps}');
+          out.add(
+            last == null
+                ? '${ex.name} — ${today.totalReps} reps, first time logged'
+                : '${ex.name} — ${today.totalReps} reps, up from ${last.totalReps}',
+          );
         }
         continue;
       }
 
-      final topToday = today.sets.map((s) => s.weightKg).reduce((a, b) => a > b ? a : b);
+      final topToday = today.sets
+          .map((s) => s.weightKg)
+          .reduce((a, b) => a > b ? a : b);
       final topLast = (last != null && last.sets.isNotEmpty)
           ? last.sets.map((s) => s.weightKg).reduce((a, b) => a > b ? a : b)
           : null;
       if (topLast == null || topToday > topLast) {
-        out.add(topLast == null
-            ? '${ex.name} — ${units.formatWeightWithUnit(topToday)}, first time logged'
-            : '${ex.name} — ${units.formatWeightWithUnit(topToday)}, '
-                'up from ${units.formatWeightWithUnit(topLast)}');
+        out.add(
+          topLast == null
+              ? '${ex.name} — ${units.formatWeightWithUnit(topToday)}, first time logged'
+              : '${ex.name} — ${units.formatWeightWithUnit(topToday)}, '
+                    'up from ${units.formatWeightWithUnit(topLast)}',
+        );
       }
     }
     return out;
@@ -482,7 +686,10 @@ class AppState extends ChangeNotifier {
       final turn = await _service.coachTurn(text);
       pendingProposalId = turn.proposalId;
       pendingLog = turn.pending.isEmpty ? null : List.of(turn.pending);
-      chatMessages = [...chatMessages, ChatMessage(sender: 'coach', body: turn.reply)];
+      chatMessages = [
+        ...chatMessages,
+        ChatMessage(sender: 'coach', body: turn.reply),
+      ];
     } catch (e) {
       // Offline, or the function is not deployed yet. Fall back to the local
       // parser so logging by chat keeps working, and persist both sides
@@ -498,7 +705,10 @@ class AppState extends ChangeNotifier {
       pendingProposalId = null;
       pendingLog = parsed.isEmpty ? null : parsed;
       await _service.saveChatMessage('coach', reply);
-      chatMessages = [...chatMessages, ChatMessage(sender: 'coach', body: reply)];
+      chatMessages = [
+        ...chatMessages,
+        ChatMessage(sender: 'coach', body: reply),
+      ];
     }
     notifyListeners();
   }
@@ -547,8 +757,10 @@ class AppState extends ChangeNotifier {
   List<PendingLogRow> _parseSessionLog(String text) {
     final clauses = text.split(RegExp(r'[,;]| and ', caseSensitive: false));
     final rows = <PendingLogRow>[];
-    final numPattern =
-        RegExp(r'(\d+(?:\.\d+)?)\s*[x×]\s*(\d+)(?:\s*[x×]\s*(\d+))?', caseSensitive: false);
+    final numPattern = RegExp(
+      r'(\d+(?:\.\d+)?)\s*[x×]\s*(\d+)(?:\s*[x×]\s*(\d+))?',
+      caseSensitive: false,
+    );
 
     for (final clause in clauses) {
       final match = numPattern.firstMatch(clause);
@@ -569,16 +781,20 @@ class AppState extends ChangeNotifier {
 
       final shown = double.tryParse(match.group(1)!) ?? 0;
       final reps = int.tryParse(match.group(2)!) ?? 0;
-      final sets = match.group(3) != null ? (int.tryParse(match.group(3)!) ?? 1) : 1;
+      final sets = match.group(3) != null
+          ? (int.tryParse(match.group(3)!) ?? 1)
+          : 1;
       if (reps <= 0 || sets <= 0) continue;
 
-      rows.add(PendingLogRow(
-        exerciseId: ex.id,
-        exerciseName: ex.name,
-        weightKg: units.toKg(shown),
-        reps: reps,
-        sets: sets,
-      ));
+      rows.add(
+        PendingLogRow(
+          exerciseId: ex.id,
+          exerciseName: ex.name,
+          weightKg: units.toKg(shown),
+          reps: reps,
+          sets: sets,
+        ),
+      );
     }
     return rows;
   }
@@ -614,7 +830,10 @@ class AppState extends ChangeNotifier {
         debugPrint('LOAD: confirm failed — $e');
         chatMessages = [
           ...chatMessages,
-          ChatMessage(sender: 'coach', body: "That didn't save — try again in a moment."),
+          ChatMessage(
+            sender: 'coach',
+            body: "That didn't save — try again in a moment.",
+          ),
         ];
         notifyListeners();
         return;

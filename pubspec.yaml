@@ -50,6 +50,23 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.6
+
+flutter_launcher_icons:
+  image_path: "assets/logo/app_icon.png"
+  android: true
+  ios: true
+  remove_alpha_ios: true
+  adaptive_icon_background: "#B94642"
+  adaptive_icon_foreground: "assets/logo/app_icon_foreground.png"
+
+flutter_native_splash:
+  color: "#FCF3EE"
+  image: "assets/logo/splash_lockup.png"
+  android_12:
+    color: "#FCF3EE"
+    image: "assets/logo/splash_lockup.png"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -65,6 +82,7 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - .env
+    - assets/logo/
 
   fonts:
     - family: Nunito
