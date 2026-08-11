@@ -41,7 +41,7 @@ class _TodayScreenState extends State<TodayScreen> {
     final next = List.generate(state.exercises.length, (i) => i)
         .firstWhere((i) => !state.exerciseDone(i), orElse: () => 0);
     if (state.currentSessionId == null) {
-      await state.startSession('Push Day');
+      await state.startSession(state.planLabel ?? 'Training');
     }
     if (!mounted) return;
     _openLog(state, next);
@@ -54,12 +54,16 @@ class _TodayScreenState extends State<TodayScreen> {
     final dateLabel = DateFormat('EEEE, MMMM d').format(DateTime.now());
     final showNudge = !_nudgeDismissed && !state.sessionComplete && state.sessionsThisWeek == 0;
 
+    if (!state.loading && !state.hasPlan) {
+      return _NoPlanState(profileComplete: state.profile.isComplete);
+    }
+
     return ListView(
       padding: const EdgeInsets.only(bottom: 28),
       children: [
         ScreenHeader(
           eyebrow: dateLabel,
-          title: 'Push Day',
+          title: state.planLabel ?? 'Training',
           accentLine: state.trainingStreak > 0
               ? '${state.trainingStreak}-day streak · ${state.sessionsThisWeek} sessions this week'
               : null,
@@ -159,13 +163,13 @@ class _TodayScreenState extends State<TodayScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 20),
           child: _QuickLogRow(
             title: "Log today's protein",
-            subtitle: '${state.proteinToday} / ${state.profile.proteinTargetG} g'
+            subtitle: '${state.proteinToday} / ${state.proteinTarget.grams} g'
                 '${state.proteinStreak > 0 ? '  ·  ${state.proteinStreak}-day streak' : ''}',
             hint: 'g',
             controller: _proteinCtrl,
-            progress: state.profile.proteinTargetG == 0
+            progress: state.proteinTarget.grams == 0
                 ? 0
-                : (state.proteinToday / state.profile.proteinTargetG).clamp(0.0, 1.0),
+                : (state.proteinToday / state.proteinTarget.grams).clamp(0.0, 1.0),
             onSubmit: () {
               final g = int.tryParse(_proteinCtrl.text.trim());
               if (g == null || g <= 0) return;
@@ -224,7 +228,7 @@ class _ExerciseCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  ex.setsLabel,
+                  ex.prescriptionLabel,
                   style: const TextStyle(
                     fontFamily: AppTheme.fontFamily,
                     fontWeight: FontWeight.w600,
@@ -263,28 +267,39 @@ class _ExerciseCard extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              RichText(
-                text: TextSpan(
-                  style: const TextStyle(
+              if (ex.isBodyweight)
+                const Text(
+                  'Bodyweight',
+                  style: TextStyle(
                     fontFamily: AppTheme.fontFamily,
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
-                    height: 1.2,
-                    color: AppColors.textBody,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
                   ),
-                  children: [
-                    TextSpan(text: units.formatWeight(ex.weightKg)),
-                    TextSpan(
-                      text: ' ${units.weightLabel}',
-                      style: const TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textSecondary,
-                      ),
+                )
+              else
+                RichText(
+                  text: TextSpan(
+                    style: const TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 16,
+                      height: 1.2,
+                      color: AppColors.textBody,
                     ),
-                  ],
+                    children: [
+                      TextSpan(text: units.formatWeight(ex.weightKg)),
+                      TextSpan(
+                        text: ' ${units.weightLabel}',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
               const SizedBox(height: 2),
               Text(
                 done ? 'Done' : '$logged/${ex.setsTarget} sets',
@@ -415,6 +430,46 @@ class _QuickLogRow extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _NoPlanState extends StatelessWidget {
+  final bool profileComplete;
+  const _NoPlanState({required this.profileComplete});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.event_available_rounded, size: 40, color: AppColors.textFaint),
+            const SizedBox(height: 16),
+            Text(
+              profileComplete ? 'Building your plan…' : "Let's finish setting you up",
+              style: Theme.of(context).textTheme.titleLarge,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              profileComplete
+                  ? "This shouldn't take long — pull to refresh in a moment."
+                  : 'Finish your profile in Settings so I can build a program around it.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                height: 1.5,
+                color: AppColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

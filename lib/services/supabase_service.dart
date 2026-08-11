@@ -211,94 +211,33 @@ class SupabaseService {
     return id as String?;
   }
 
-  /// Today's prescribed exercises, taken from the active program via
-  /// scheduled_workouts → program_days → program_day_exercises → exercises.
-  ///
-  /// Falls back to the next pending scheduled day, then to the first day of
-  /// the rotation, so the Today screen is never blank for a user with a
-  /// program just because the calendar has drifted.
-  Future<List<ExerciseSpec>> fetchTodayExercises() async {
+  /// Everything the Today screen renders, in one call: the prescription, what
+  /// was done last time, what's logged today, and the session-level totals —
+  /// see `today_plan(uuid)` in migrations 0011/0013/0015.
+  Future<TodayPlan> fetchTodayPlan() async {
     final uid = currentUser?.id;
-    if (uid == null) return [];
+    if (uid == null) return TodayPlan.empty;
 
-    final program = await client
-        .from('programs')
-        .select('id')
-        .eq('user_id', uid)
-        .eq('status', 'active')
-        .maybeSingle();
-    if (program == null) return [];
-    final programId = program['id'] as String;
+    final json = await client.rpc('today_plan', params: {'p_user_id': uid});
+    if (json is! Map) return TodayPlan.empty;
 
-    final dayId = await _resolveProgramDay(uid, programId);
-    if (dayId == null) return [];
-    _programDayId = dayId;
-
-    final rows = await client
-        .from('program_day_exercises')
-        .select('ordinal, sets_target, rep_low, rep_high, target_weight_kg, '
-            'exercises!inner(id, name, '
-            'exercise_cues(position, body), '
-            'exercise_joints(joints(slug)))')
-        .eq('program_day_id', dayId)
-        .order('ordinal', ascending: true);
-
-    final specs = <ExerciseSpec>[];
-    for (final r in (rows as List).cast<Map<String, dynamic>>()) {
-      final ex = r['exercises'] as Map<String, dynamic>;
-      specs.add(ExerciseSpec(
-        id: ex['id'] as String,
-        name: ex['name'] as String,
-        setsTarget: (r['sets_target'] as int?) ?? 3,
-        // Double progression aims at the top of the prescribed range.
-        reps: (r['rep_high'] as int?) ?? (r['rep_low'] as int?) ?? 10,
-        weightKg: (r['target_weight_kg'] as num?)?.toDouble() ?? 0,
-        joints: _jointSlugs(ex),
-        cues: _cues(ex),
-      ));
-    }
-
-    // Where the plan carries no target load, show what they last actually
-    // lifted rather than a zero.
-    final missing = specs.where((s) => s.weightKg <= 0).map((s) => s.id).toList();
-    if (missing.isEmpty) return specs;
-
-    final bests = await _lastTopWeights(uid, missing);
-    return specs
-        .map((s) => s.weightKg > 0 ? s : s.copyWith(weightKg: bests[s.id] ?? 0))
-        .toList();
+    final plan = TodayPlan.fromJson(json.cast<String, dynamic>());
+    _programDayId = plan.programDayId;
+    return plan;
   }
 
-  Future<String?> _resolveProgramDay(String uid, String programId) async {
-    final todayRow = await client
-        .from('scheduled_workouts')
-        .select('program_day_id')
-        .eq('user_id', uid)
-        .eq('program_id', programId)
-        .eq('scheduled_for', _today())
-        .maybeSingle();
-    if (todayRow != null) return todayRow['program_day_id'] as String;
-
-    final upcoming = await client
-        .from('scheduled_workouts')
-        .select('program_day_id')
-        .eq('user_id', uid)
-        .eq('program_id', programId)
-        .eq('status', 'pending')
-        .gte('scheduled_for', _today())
-        .order('scheduled_for', ascending: true)
-        .limit(1)
-        .maybeSingle();
-    if (upcoming != null) return upcoming['program_day_id'] as String;
-
-    final first = await client
-        .from('program_days')
-        .select('id')
-        .eq('program_id', programId)
-        .order('ordinal', ascending: true)
-        .limit(1)
-        .maybeSingle();
-    return first?['id'] as String?;
+  /// The session for the lifter's local day — the same one whichever logging
+  /// path (Today screen or chat) reaches for, so a day is never split across
+  /// two rows. Safe to call repeatedly: it returns the existing session if
+  /// one is already open.
+  Future<String?> openSessionForToday({String? title}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final id = await client.rpc('open_session_for_today', params: {
+      'p_user_id': uid,
+      'p_title': ?title,
+    });
+    return id as String?;
   }
 
   List<String> _jointSlugs(Map<String, dynamic> exercise) {
@@ -317,25 +256,6 @@ class SupabaseService {
         .toList()
       ..sort((a, b) => ((a['position'] as int?) ?? 0).compareTo((b['position'] as int?) ?? 0));
     return raw.map((c) => c['body'] as String).toList();
-  }
-
-  Future<Map<String, double>> _lastTopWeights(String uid, List<String> exerciseIds) async {
-    if (exerciseIds.isEmpty) return {};
-    final rows = await client
-        .from('v_exercise_daily_bests')
-        .select('exercise_id, performed_on, top_weight_kg')
-        .eq('user_id', uid)
-        .inFilter('exercise_id', exerciseIds)
-        .order('performed_on', ascending: false);
-
-    final out = <String, double>{};
-    for (final r in (rows as List).cast<Map<String, dynamic>>()) {
-      final id = r['exercise_id'] as String;
-      if (out.containsKey(id)) continue; // rows are newest first
-      final kg = (r['top_weight_kg'] as num?)?.toDouble();
-      if (kg != null) out[id] = kg;
-    }
-    return out;
   }
 
   /// Joint-friendly substitutes for the given catalog exercises, keyed by the
@@ -379,30 +299,6 @@ class SupabaseService {
   }
 
   // ── sessions ─────────────────────────────────────────────────────────
-
-  Future<String> startSession(String label) async {
-    final uid = currentUser?.id;
-    if (uid == null) throw StateError('Not signed in');
-
-    // One in-progress session per user is a partial unique index; retire any
-    // session left open by a previous run before opening a new one.
-    await client
-        .from('workout_sessions')
-        .update({'status': 'abandoned'})
-        .eq('user_id', uid)
-        .eq('status', 'in_progress');
-
-    final row = await client
-        .from('workout_sessions')
-        .insert({
-          'user_id': uid,
-          'title': label,
-          if (_programDayId != null) 'program_day_id': _programDayId,
-        })
-        .select('id')
-        .single();
-    return row['id'] as String;
-  }
 
   /// Logs one set. Sets hang off `session_exercises` now, so the parent row is
   /// created on first use and reused after that.
@@ -465,6 +361,47 @@ class SupabaseService {
     final id = row['id'] as String;
     _sessionExerciseIds[key] = id;
     return id;
+  }
+
+  /// The individual set rows for one exercise in one session, in the order
+  /// they were logged — with real row ids, so a specific set can be edited
+  /// or deleted. `today_plan` only returns the aggregated `[weight, reps]`
+  /// pairs, which is enough to render the list but not enough to address one.
+  Future<List<LoggedSetRow>> fetchSetsForExercise(
+    String sessionId,
+    String exerciseId,
+    int ordinal,
+  ) async {
+    final uid = currentUser?.id;
+    if (uid == null) return [];
+    final sessionExerciseId = await _sessionExercise(uid, sessionId, exerciseId, ordinal);
+
+    final rows = await client
+        .from('session_sets')
+        .select('id, set_number, weight_kg, reps')
+        .eq('session_exercise_id', sessionExerciseId)
+        .eq('is_completed', true)
+        .order('set_number', ascending: true);
+
+    return (rows as List)
+        .cast<Map<String, dynamic>>()
+        .map((r) => LoggedSetRow(
+              id: r['id'] as String,
+              setNumber: r['set_number'] as int,
+              weightKg: (r['weight_kg'] as num).toDouble(),
+              reps: r['reps'] as int,
+            ))
+        .toList();
+  }
+
+  Future<void> updateSet(String setId, {required double weightKg, required int reps}) async {
+    await client
+        .from('session_sets')
+        .update({'weight_kg': weightKg, 'reps': reps}).eq('id', setId);
+  }
+
+  Future<void> deleteSet(String setId) async {
+    await client.from('session_sets').delete().eq('id', setId);
   }
 
   Future<void> completeSession(
@@ -540,24 +477,47 @@ class SupabaseService {
     );
   }
 
+  /// From `v_bodyweight_trend`, so each entry carries both the raw reading
+  /// and the 7-day trailing mean — day-to-day bodyweight swings ±1-2 kg on
+  /// water and food alone, so the mean is what's worth charting.
   Future<List<WeightEntry>> fetchWeightLog({int limit = 12}) async {
     final uid = currentUser?.id;
     if (uid == null) return [];
     final rows = await client
-        .from('body_measurements')
-        .select('measured_on, weight_kg')
+        .from('v_bodyweight_trend')
+        .select('measured_on, raw_kg, avg_7d')
         .eq('user_id', uid)
-        .not('weight_kg', 'is', null)
         .order('measured_on', ascending: false)
         .limit(limit);
     return (rows as List)
         .map((r) => WeightEntry(
-              weightKg: (r['weight_kg'] as num).toDouble(),
+              weightKg: (r['raw_kg'] as num).toDouble(),
+              avgKg: (r['avg_7d'] as num?)?.toDouble(),
               loggedAt: DateTime.parse(r['measured_on'] as String),
             ))
         .toList()
         .reversed
         .toList();
+  }
+
+  /// The goal-derived daily protein target — see `protein_target_for(uuid)`.
+  /// `protein_target_for` alone computes it; `syncProteinTarget` also
+  /// persists it to `nutrition_targets`, worth calling after a weigh-in
+  /// changes the basis.
+  Future<ProteinTarget> fetchProteinTarget() async {
+    final uid = currentUser?.id;
+    if (uid == null) return ProteinTarget.placeholder;
+    final rows =
+        await client.rpc('protein_target_for', params: {'p_user_id': uid});
+    final list = (rows as List?) ?? const [];
+    if (list.isEmpty) return ProteinTarget.placeholder;
+    return ProteinTarget.fromRow((list.first as Map).cast<String, dynamic>());
+  }
+
+  Future<void> syncProteinTarget() async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    await client.rpc('sync_protein_target', params: {'p_user_id': uid});
   }
 
   Future<void> logProtein(int grams) async {
