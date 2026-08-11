@@ -125,12 +125,32 @@ Listed because each one is a trap that can reappear.
 9. **Bare shorthand not logging.** `hammer curls 14x12x3` (no verb) was answered
    as a question, even though the app's input hint teaches exactly that format.
    Fixed in the system prompt in `context.ts`.
+10. **Orphaned calendar slots.** `bootstrap_user_program` archived the previous
+    program but left its `scheduled_workouts` rows `pending`, so every re-plan
+    added six more slots pointing at a program nobody trains. A trigger now
+    cancels them on archive (`0010`).
+11. **`nutrition_targets` could not be corrected on the day it was created.**
+    The constraint requires `valid_to > valid_from`, so a target written at
+    onboarding and recalculated after the first weigh-in — the exact first-run
+    sequence — threw. Amended in place rather than relaxing the constraint and
+    littering the table with zero-length versions (`0012`).
+12. **`program_day_id` is not a stable identity for "Push Day".** Every re-plan
+    mints fresh `program_days` rows, so all historical sessions pointed at
+    *archived* days and the session comparison returned null — re-planning
+    silently erased the history that shows whether you're getting stronger.
+    Matched by label now (`0015`). Note it failed to **null**, not to a wrong
+    number, which is the failure mode that hides longest.
+13. **Sessions never recorded which program day they were.** Nothing populated
+    `workout_sessions.program_day_id` before `open_session_for_today`, so there
+    was nothing for the comparison to match on. Backfilled by title (`0014`);
+    sessions with no matching day stay null, because ad-hoc training genuinely
+    has no prescription to compare against.
 
 ---
 
 ## 5. What to test next
 
-Nothing below has been exercised.
+Unticked items have never been exercised.
 
 - [ ] **Onboarding end to end.** Sign in as `kr.rajesh117@gmail.com`, complete
       onboarding, confirm `bootstrap_my_program` produces a sensible program.
@@ -165,9 +185,11 @@ Roughly in value order.
    the coach feels slow on longer answers. `streamGenerateContent?alt=sse`.
 3. **`propose_swap` and `propose_program_change`.** Declared in the design, not
    implemented — the coach can log but cannot yet change the plan.
-4. **Progression applied to the program.** `coach_next_load` exists and is
-   correct, but nothing writes its suggestion back into
-   `program_day_exercises.target_weight_kg`.
+4. **Surface the progression suggestion.** `coach_next_load` exists and is
+   correct and is still shown nowhere. `today_plan.prefill_kg` deliberately
+   returns what was *last lifted*, not the suggestion — the advice is meant to
+   sit beside the stepper as something you accept, not be silently pre-applied.
+   Nothing writes it back to `program_day_exercises.target_weight_kg` either.
 5. **Explicit context caching.** Currently relying on implicit prefix caching.
    Gemini `cachedContents` needs ≥4096 tokens and TTL management.
 6. **`program_blocks`** (mesocycles/deloads) — table exists, nothing uses it.
@@ -190,7 +212,7 @@ supabase functions deploy coach
 
 # verify the schema locally before touching production
 docker run -d --name load-pg -e POSTGRES_PASSWORD=pg postgres:17-alpine
-# then apply 0003→0009 against it (needs an auth.users + auth.uid() stub)
+# then apply 0003→0015 against it (needs an auth.users + auth.uid() stub)
 ```
 
 - Migrations are named `0001_`-style, **not** Supabase's timestamp convention.
