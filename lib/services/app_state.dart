@@ -3,30 +3,51 @@ import '../models/models.dart';
 import '../models/units.dart';
 import 'supabase_service.dart';
 
-/// Central app state: profile + today's session + logs + chat.
+/// Central app state: profile + today's plan + logs + chat.
+///
+/// Today's plan (exercises, what's logged, session totals) comes from the
+/// server's `today_plan` RPC on every load and after every write — there is
+/// deliberately no local map of logged sets. Keeping one alongside the
+/// server was the bug that made a bodyweight exercise read "0 kg · Done" and
+/// made sets logged through chat invisible on the Today screen: two sources
+/// of truth for the same fact, free to disagree.
 class AppState extends ChangeNotifier {
   final _service = SupabaseService.instance;
 
   Profile profile = Profile();
   bool loading = true;
 
+  // ── today's plan (server-derived; see today_plan(uuid)) ────────────────
+  bool hasPlan = false;
+  String? planLabel;
+  DateTime? planDate;
+  String? currentSessionId;
+  String? sessionStatus;
   List<ExerciseSpec> exercises = [];
+  SessionTotals? sessionNow;
+  SessionTotals? sessionLast;
 
   /// Swap suggestions for the loaded plan, keyed by the exercise name they
   /// replace. Sourced from `exercise_alternatives`, prefetched so the Swap
   /// button can stay synchronous.
   Map<String, ExerciseSpec> _alternatives = {};
 
-  final Map<int, List<LoggedSet>> loggedSets = {};
   int currentExerciseIndex = 0;
-  String? currentSessionId;
   bool sessionComplete = false;
+
+  /// The real, editable rows for whichever exercise is open in the Log
+  /// screen — distinct from `exercises[i].today`, which is only the
+  /// aggregated `[weight, reps]` pairs `today_plan` returns.
+  List<LoggedSetRow> currentExerciseSets = [];
+  bool loadingSets = false;
+  bool loggingSet = false;
 
   String sessionNotes = '';
   int? sessionRpe;
   List<String> sessionPain = [];
 
   List<WeightEntry> weightLog = [];
+  ProteinTarget proteinTarget = ProteinTarget.placeholder;
   List<ProteinEntry> proteinLog = [];
   List<SessionHistoryEntry> sessionHistory = [];
   List<ChatMessage> chatMessages = [];
@@ -69,6 +90,7 @@ class AppState extends ChangeNotifier {
     await Future.wait([
       _guard('weigh-ins', () async => weightLog = await _service.fetchWeightLog()),
       _guard('protein', () async => proteinLog = await _service.fetchProteinLog()),
+      _guard('protein target', _syncAndFetchProteinTarget),
       _guard('sessions', () async => sessionHistory = await _service.fetchSessionHistory()),
       _guard('chat', () async => chatMessages = await _service.fetchChatHistory()),
       _guard('exercises', () async => trackedExercises = await _service.fetchLoggedExerciseNames()),
@@ -100,20 +122,53 @@ class AppState extends ChangeNotifier {
   /// completed onboarding but has no program yet gets one built for them from
   /// the catalog, once.
   Future<void> _loadTodayPlan() async {
-    var plan = await _service.fetchTodayExercises();
-    if (plan.isEmpty && profile.isComplete) {
+    var plan = await _service.fetchTodayPlan();
+    if (!plan.hasPlan && profile.isComplete) {
       await _service.bootstrapProgram();
-      plan = await _service.fetchTodayExercises();
+      plan = await _service.fetchTodayPlan();
     }
-    exercises = plan;
+    _applyPlan(plan);
+
     _alternatives = {};
-    if (plan.isNotEmpty) {
-      final byId = await _service.fetchAlternatives(plan.map((e) => e.id).toList());
+    if (plan.exercises.isNotEmpty) {
+      final byId = await _service.fetchAlternatives(plan.exercises.map((e) => e.id).toList());
       _alternatives = {
-        for (final ex in plan)
+        for (final ex in plan.exercises)
           if (byId[ex.id] != null) ex.name: byId[ex.id]!,
       };
     }
+  }
+
+  /// Re-fetches `today_plan` without touching alternatives or profile — the
+  /// call every write makes afterward, so the screen always shows what the
+  /// server actually has.
+  Future<void> _refreshTodayPlan() async {
+    final plan = await _service.fetchTodayPlan();
+    _applyPlan(plan);
+  }
+
+  void _applyPlan(TodayPlan plan) {
+    hasPlan = plan.hasPlan;
+    planLabel = plan.label;
+    planDate = plan.localDate;
+    currentSessionId = plan.sessionId;
+    sessionStatus = plan.sessionStatus;
+    exercises = plan.exercises;
+    sessionNow = plan.sessionNow;
+    sessionLast = plan.sessionLast;
+    sessionComplete = plan.sessionStatus == 'completed';
+    if (exercises.isEmpty) {
+      currentExerciseIndex = 0;
+    } else if (currentExerciseIndex >= exercises.length) {
+      currentExerciseIndex = exercises.length - 1;
+    }
+  }
+
+  Future<void> _syncAndFetchProteinTarget() async {
+    // Persists the goal-derived target if it's drifted, then reads it back —
+    // keeps nutrition_targets from disagreeing with what the app shows.
+    await _service.syncProteinTarget();
+    proteinTarget = await _service.fetchProteinTarget();
   }
 
   Future<void> refreshProgress() async {
@@ -145,7 +200,7 @@ class AppState extends ChangeNotifier {
     await _service.saveProfile(profile);
     // Goal, environment and split all feed plan generation, so a profile
     // change is also the moment a first plan can be built.
-    if (exercises.isEmpty && profile.isComplete) {
+    if (!hasPlan && profile.isComplete) {
       await _guard('plan', _loadTodayPlan);
     }
     notifyListeners();
@@ -164,6 +219,9 @@ class AppState extends ChangeNotifier {
     profile.currentWeightKg = weightKg;
     notifyListeners();
     await _service.saveProfile(profile);
+    // The protein target's basis is bodyweight — a new reading can move it.
+    await _guard('protein target', _syncAndFetchProteinTarget);
+    notifyListeners();
   }
 
   Future<void> logProtein(int grams) async {
@@ -239,51 +297,34 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  int loggedCount(int index) => loggedSets[index]?.length ?? 0;
-  bool exerciseDone(int index) => loggedCount(index) >= exercises[index].setsTarget;
+  int loggedCount(int index) => exercises[index].setsLoggedToday;
+  bool exerciseDone(int index) => exercises[index].progress == SetProgress.complete;
 
-  int get totalDone {
-    var n = 0;
-    for (var i = 0; i < exercises.length; i++) {
-      if (exerciseDone(i)) n++;
-    }
-    return n;
+  int get totalDone =>
+      exercises.where((e) => e.progress == SetProgress.complete).length;
+
+  double get sessionVolumeKg => sessionNow?.volumeKg ?? 0;
+  int get sessionSetsLogged => sessionNow?.setCount ?? 0;
+  int get sessionSetsTarget => exercises.fold(0, (sum, ex) => sum + ex.setsTarget);
+
+  /// The session-level result line: "Push Day · 2,475 kg · +155 vs last time".
+  /// Null until there's both a session in progress and a prior one to compare.
+  double? get sessionVolumeDeltaKg {
+    final now = sessionNow, last = sessionLast;
+    if (now == null || last == null) return null;
+    return now.volumeKg - last.volumeKg;
   }
-
-  double get sessionVolumeKg {
-    var v = 0.0;
-    for (final sets in loggedSets.values) {
-      for (final s in sets) {
-        v += s.weightKg * s.reps;
-      }
-    }
-    return v;
-  }
-
-  int get sessionSetsLogged {
-    var n = 0;
-    for (final sets in loggedSets.values) {
-      n += sets.length;
-    }
-    return n;
-  }
-
-  int get sessionSetsTarget =>
-      exercises.fold(0, (sum, ex) => sum + ex.setsTarget);
-
-  /// True once a plan has actually loaded. Everything on the Today screen
-  /// indexes into [exercises], so there is nothing to start without one.
-  bool get hasPlan => exercises.isNotEmpty;
 
   Future<void> startSession(String label) async {
     if (!hasPlan) return;
-    currentSessionId = await _service.startSession(label);
-    loggedSets.clear();
-    currentExerciseIndex = 0;
+    final id = await _service.openSessionForToday();
+    currentSessionId = id;
     sessionComplete = false;
     sessionNotes = '';
     sessionRpe = null;
     sessionPain = [];
+    notifyListeners();
+    await _guard('plan', _refreshTodayPlan);
     notifyListeners();
   }
 
@@ -292,43 +333,96 @@ class AppState extends ChangeNotifier {
     // Clamped: the plan can change under a pushed LogScreen (a swap, a
     // reload), and an out-of-range index there is a crash, not a glitch.
     currentExerciseIndex = index.clamp(0, exercises.length - 1);
+    currentExerciseSets = [];
+    notifyListeners();
+    _guard('sets', loadSetsForCurrentExercise);
+  }
+
+  /// The real `session_sets` rows for the exercise currently open in the Log
+  /// screen — fetched separately from `today_plan` because that RPC only
+  /// returns aggregated pairs, with no row id to edit or delete against.
+  Future<void> loadSetsForCurrentExercise() async {
+    if (!hasPlan || currentSessionId == null || exercises.isEmpty) {
+      currentExerciseSets = [];
+      notifyListeners();
+      return;
+    }
+    loadingSets = true;
+    notifyListeners();
+    final ex = exercises[currentExerciseIndex];
+    currentExerciseSets = await _service.fetchSetsForExercise(
+      currentSessionId!,
+      ex.id,
+      currentExerciseIndex + 1,
+    );
+    loadingSets = false;
     notifyListeners();
   }
 
   Future<void> logSet(int exerciseIndex, double weightKg, int reps) async {
-    final list = loggedSets.putIfAbsent(exerciseIndex, () => []);
-    list.add(LoggedSet(weightKg: weightKg, reps: reps));
+    final sessionId = currentSessionId;
+    if (sessionId == null || exerciseIndex >= exercises.length) return;
+
+    loggingSet = true;
     notifyListeners();
-    if (currentSessionId != null) {
-      await _service.logSet(
-        currentSessionId!,
-        exercises[exerciseIndex].id,
-        exerciseIndex + 1,
-        list.length,
-        weightKg,
-        reps,
-      );
+    try {
+      final ex = exercises[exerciseIndex];
+      final setNumber = ex.setsLoggedToday + 1;
+      await _service.logSet(sessionId, ex.id, exerciseIndex + 1, setNumber, weightKg, reps);
+      await _refreshTodayPlan();
+      if (exerciseIndex == currentExerciseIndex) {
+        await loadSetsForCurrentExercise();
+      }
+    } finally {
+      loggingSet = false;
+      notifyListeners();
     }
   }
 
-  void undoLastSet(int exerciseIndex) {
-    final list = loggedSets[exerciseIndex];
-    if (list == null || list.isEmpty) return;
-    list.removeLast();
-    notifyListeners();
+  Future<void> updateSet(String setId, double weightKg, int reps) async {
+    await _service.updateSet(setId, weightKg: weightKg, reps: reps);
+    await _refreshTodayPlan();
+    await loadSetsForCurrentExercise();
   }
 
-  /// PRs for the just-finished session, computed from what was actually
-  /// logged versus the planned working weight.
+  Future<void> deleteSet(String setId) async {
+    await _service.deleteSet(setId);
+    await _refreshTodayPlan();
+    await loadSetsForCurrentExercise();
+  }
+
+  Future<void> undoLastLoggedSet() async {
+    if (currentExerciseSets.isEmpty) return;
+    await deleteSet(currentExerciseSets.last.id);
+  }
+
+  /// PRs for the just-finished session: today's heaviest set (or, for
+  /// bodyweight work, today's total reps) against the same exercise last time.
   List<String> get sessionHighlights {
     final out = <String>[];
-    for (var i = 0; i < exercises.length; i++) {
-      final sets = loggedSets[i];
-      if (sets == null || sets.isEmpty) continue;
-      final top = sets.map((s) => s.weightKg).reduce((a, b) => a > b ? a : b);
-      if (top > exercises[i].weightKg) {
-        out.add('${exercises[i].name} — ${units.formatWeightWithUnit(top)}, '
-            'up from ${units.formatWeightWithUnit(exercises[i].weightKg)}');
+    for (final ex in exercises) {
+      final today = ex.today;
+      if (today == null || today.sets.isEmpty) continue;
+      final last = ex.last;
+
+      if (ex.isBodyweight) {
+        if (last == null || today.totalReps > last.totalReps) {
+          out.add(last == null
+              ? '${ex.name} — ${today.totalReps} reps, first time logged'
+              : '${ex.name} — ${today.totalReps} reps, up from ${last.totalReps}');
+        }
+        continue;
+      }
+
+      final topToday = today.sets.map((s) => s.weightKg).reduce((a, b) => a > b ? a : b);
+      final topLast = (last != null && last.sets.isNotEmpty)
+          ? last.sets.map((s) => s.weightKg).reduce((a, b) => a > b ? a : b)
+          : null;
+      if (topLast == null || topToday > topLast) {
+        out.add(topLast == null
+            ? '${ex.name} — ${units.formatWeightWithUnit(topToday)}, first time logged'
+            : '${ex.name} — ${units.formatWeightWithUnit(topToday)}, '
+                'up from ${units.formatWeightWithUnit(topLast)}');
       }
     }
     return out;
@@ -337,14 +431,16 @@ class AppState extends ChangeNotifier {
   Future<void> finishSession(String label) async {
     sessionComplete = true;
     notifyListeners();
-    if (currentSessionId != null) {
+    final id = currentSessionId;
+    if (id != null) {
       await _service.completeSession(
-        currentSessionId!,
+        id,
         notes: sessionNotes,
         rpe: sessionRpe,
         pain: sessionPain,
       );
-      await refreshProgress();
+      await _guard('plan', _refreshTodayPlan);
+      await _guard('progress', refreshProgress);
     }
   }
 
@@ -361,6 +457,8 @@ class AppState extends ChangeNotifier {
       );
     }).toList();
     notifyListeners();
+    // The swapped-in movement has its own history under its own exercise id.
+    _guard('sets', loadSetsForCurrentExercise);
   }
 
   bool canSwap(String name) => _alternatives.containsKey(name);
@@ -424,8 +522,8 @@ class AppState extends ChangeNotifier {
           "easier on the joints. It's on your Today screen now.";
     }
     if (RegExp(r'protein|eat|diet|food').hasMatch(lower)) {
-      return "You're aiming for ${profile.proteinTargetG} g of protein a day. "
-          "Today you've logged $proteinToday g — log the rest from the Today screen.";
+      return "You're aiming for ${proteinTarget.grams} g of protein today "
+          "(${proteinTarget.rationale}) You've logged $proteinToday g so far.";
     }
     if (RegExp(r'hurt|pain|sore|injur').hasMatch(lower)) {
       return "If it's sharp or joint-related, stop the movement and we'll swap it. "
@@ -475,6 +573,7 @@ class AppState extends ChangeNotifier {
       if (reps <= 0 || sets <= 0) continue;
 
       rows.add(PendingLogRow(
+        exerciseId: ex.id,
         exerciseName: ex.name,
         weightKg: units.toKg(shown),
         reps: reps,
@@ -527,17 +626,34 @@ class AppState extends ChangeNotifier {
       // unhandled failure here would skip the notifyListeners() at the end of
       // this method and leave the confirm card on screen for work that was
       // actually saved — which reads to the user as "confirm is broken".
-      await _guard('plan', _loadTodayPlan);
+      await _guard('plan', _refreshTodayPlan);
       await _guard('progress', refreshProgress);
     } else {
-      // Offline fallback: write it locally against the open session.
-      currentSessionId ??= await _service.startSession('Logged from chat');
-      for (final row in rows) {
-        final idx = exercises.indexWhere((e) => e.name == row.exerciseName);
-        if (idx == -1) continue;
-        for (var n = 0; n < row.sets; n++) {
-          await logSet(idx, row.weightKg, row.reps);
+      // Offline fallback: write it locally against the open session. Set
+      // numbers are tracked here rather than through logSet(), which trusts
+      // the server's count after each write — refreshing between every set
+      // in a multi-set batch would be both slow and, mid-batch, stale.
+      currentSessionId ??= await _service.openSessionForToday();
+      final sessionId = currentSessionId;
+      if (sessionId != null) {
+        final startCounts = <int, int>{};
+        for (final row in rows) {
+          final idx = exercises.indexWhere((e) => e.name == row.exerciseName);
+          if (idx == -1) continue;
+          final base = startCounts[idx] ?? exercises[idx].setsLoggedToday;
+          for (var n = 0; n < row.sets; n++) {
+            await _service.logSet(
+              sessionId,
+              exercises[idx].id,
+              idx + 1,
+              base + n + 1,
+              row.weightKg,
+              row.reps,
+            );
+          }
+          startCounts[idx] = base + row.sets;
         }
+        await _guard('plan', _refreshTodayPlan);
       }
       pendingLog = null;
     }

@@ -61,7 +61,10 @@ class ProgressScreen extends StatelessWidget {
 
           // ── bodyweight ─────────────────────────────────────────────────
           if (state.weightLog.isNotEmpty) ...[
-            const _Section('Bodyweight'),
+            _Section(
+              'Bodyweight',
+              caption: '7-day average — a single reading moves on water and food',
+            ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: AppCard(
@@ -69,7 +72,7 @@ class ProgressScreen extends StatelessWidget {
                 child: TrendLineChart(
                   points: [
                     for (final e in state.weightLog)
-                      ChartPoint(units.fromKg(e.weightKg), dayFmt.format(e.loggedAt)),
+                      ChartPoint(units.fromKg(e.avgKg), dayFmt.format(e.loggedAt)),
                   ],
                   color: AppColors.accent,
                   goalValue: state.profile.targetWeightKg == null
@@ -147,7 +150,7 @@ class ProgressScreen extends StatelessWidget {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          'today of ${state.profile.proteinTargetG} g',
+                          'today of ${state.proteinTarget.grams} g',
                           style: const TextStyle(
                             fontFamily: AppTheme.fontFamily,
                             fontWeight: FontWeight.w600,
@@ -157,6 +160,17 @@ class ProgressScreen extends StatelessWidget {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 4),
+                    Text(
+                      state.proteinTarget.rationale,
+                      style: const TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 10.5,
+                        height: 1.4,
+                        color: AppColors.textFaint,
+                      ),
+                    ),
                     const SizedBox(height: 16),
                     TargetBarChart(
                       points: [
@@ -165,7 +179,7 @@ class ProgressScreen extends StatelessWidget {
                             : state.proteinLog)
                           ChartPoint(e.grams.toDouble(), DateFormat('E').format(e.loggedAt)[0]),
                       ],
-                      target: state.profile.proteinTargetG.toDouble(),
+                      target: state.proteinTarget.grams.toDouble(),
                       color: AppColors.accent,
                     ),
                   ],
@@ -245,13 +259,32 @@ class ProgressScreen extends StatelessWidget {
 
 class _Section extends StatelessWidget {
   final String title;
-  const _Section(this.title);
+  final String? caption;
+  const _Section(this.title, {this.caption});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 0),
-      child: SectionLabel(title),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SectionLabel(title),
+          if (caption != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10, top: 2),
+              child: Text(
+                caption!,
+                style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 10.5,
+                  color: AppColors.textFaint,
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

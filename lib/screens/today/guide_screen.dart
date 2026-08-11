@@ -31,7 +31,7 @@ class GuideScreen extends StatelessWidget {
           Text(exercise.name, style: Theme.of(context).textTheme.headlineMedium),
           const SizedBox(height: 4),
           Text(
-            '${exercise.setsLabel} · target',
+            exercise.prescriptionLabel,
             style: const TextStyle(
               fontFamily: AppTheme.fontFamily,
               fontWeight: FontWeight.w600,

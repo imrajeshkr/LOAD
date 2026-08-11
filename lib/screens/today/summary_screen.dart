@@ -1,9 +1,23 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../../models/units.dart';
 import '../../services/app_state.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_widgets.dart';
+
+/// "+155 kg vs your last Push Day" — the number a lifter would actually
+/// repeat to someone. Compares against the same program day, not simply the
+/// previous session, since Push-vs-Leg-day tonnage swings wildly and would
+/// look like progress or regression that isn't real.
+String _volumeCaption(AppState state, UnitSystem units) {
+  final last = state.sessionLast;
+  if (last == null) return 'total ${units.weightLabel} moved';
+  final delta = state.sessionVolumeDeltaKg;
+  if (delta == null) return 'total ${units.weightLabel} moved';
+  final sign = delta >= 0 ? '+' : '';
+  return '$sign${units.formatWeight(delta)} ${units.weightLabel} vs last time';
+}
 
 const _painParts = ['Shoulder', 'Elbow', 'Wrist', 'Knee', 'Lower back'];
 const _rpeLabels = {
@@ -63,9 +77,9 @@ class _SummaryScreenState extends State<SummaryScreen> {
                     children: [
                       Text('Session complete',
                           style: Theme.of(context).textTheme.headlineMedium),
-                      const Text(
-                        'Push Day',
-                        style: TextStyle(
+                      Text(
+                        state.planLabel ?? 'Training',
+                        style: const TextStyle(
                           fontFamily: AppTheme.fontFamily,
                           fontWeight: FontWeight.w600,
                           fontSize: 12.5,
@@ -93,7 +107,7 @@ class _SummaryScreenState extends State<SummaryScreen> {
                   child: _StatTile(
                     label: 'Volume',
                     value: units.formatWeight(state.sessionVolumeKg),
-                    caption: 'total ${units.weightLabel} moved',
+                    caption: _volumeCaption(state, units),
                   ),
                 ),
               ],
@@ -200,7 +214,7 @@ class _SummaryScreenState extends State<SummaryScreen> {
               child: ElevatedButton(
                 onPressed: () {
                   state.sessionNotes = _notesCtrl.text.trim();
-                  state.finishSession('Push Day');
+                  state.finishSession(state.planLabel ?? 'Training');
                   Navigator.of(context).popUntil((r) => r.isFirst);
                 },
                 child: const Text('Done'),
