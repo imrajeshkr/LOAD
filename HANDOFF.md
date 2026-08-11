@@ -1,42 +1,68 @@
 # LOAD — handoff
 
-Context for continuing work. Everything below is deployed and verified live
-unless marked otherwise.
+> **Status as of the `today-screen-results` branch.** Re-read this before
+> assuming anything; the section below is the only part kept current.
 
----
+## Right now
 
-## 1. Where things stand
-
-**Supabase project:** `saiwblhqfyxpwkgnhptd` (name: "Load"). CLI is linked.
-Note it is **not** in the same Supabase account as most other projects — a
-`supabase login` with the owning account is required before any CLI work.
-
-| Piece | State |
+| | |
 |---|---|
-| v2 schema (migrations `0003`–`0009`) | applied to production |
-| Exercise catalog (36 movements) | seeded |
-| Edge Function `coach` (Gemini) | deployed, `GEMINI_API_KEY` set as a secret |
-| Flutter client | rewritten for v2, builds, verified on simulator |
-| `rajesh.test4@example.com` | seeded — 27 sessions, 351 sets, active program |
-| `kr.rajesh117@gmail.com` | provisioned but no training profile → lands on onboarding |
-| Git | **nothing committed.** ~45 files changed |
-| `v1_backup_*` tables | still on the server; drop when confident |
+| **Branch** | `today-screen-results` — **PR #2 open**, contains migrations 0011–0015 |
+| **PR #1** | merged into `main` (v2 schema + Gemini coach) |
+| **Database** | `saiwblhqfyxpwkgnhptd` — migrations **0003–0015 all applied and live** |
+| **Edge Function** | `coach` deployed, `GEMINI_API_KEY` set |
+| **Uncommitted** | `lib/models/models.dart` only |
 
-### Architecture in one paragraph
+### The one thing in flight
 
-Four layers: **catalog** (global exercises, muscles, joints, cues, swaps),
-**prescription** (`programs → program_days → program_day_exercises →
-scheduled_workouts`), **performance** (`workout_sessions → session_exercises →
-session_sets`), and **signal** (body measurements, nutrition, coach threads).
-The coach is a Supabase Edge Function that assembles a context pack from SQL
-views, calls Gemini with tools, and can only ever create a *pending proposal* —
-turning that into rows happens in a separate endpoint with no model in it.
+`lib/models/models.dart` has the client shapes for the new backend —
+`ExerciseEffort`, `SetProgress`, and `last`/`today`/`loadType`/`prefillKg` on
+`ExerciseSpec`. **Nothing consumes them yet.** This is not a staging decision:
+a background agent was wiring the whole client side and was stopped after
+editing this one file. `flutter analyze` is clean because every new field is
+optional or defaulted.
 
-Design docs: `supabase/design/v2_schema_proposal.sql`, `supabase/README.md`.
+Verified by grep: `today_plan`, `ExerciseEffort` and `SetProgress` appear
+nowhere in `supabase_service.dart`, `app_state.dart` or `lib/screens/today/`.
+The client still calls the older plan loader that reads
+`program_day_exercises` directly, so **none of the Today-screen fix is visible
+in the app yet** — a bodyweight exercise still renders `0 kg · Done`.
+
+### Next step, and the collision risk
+
+The natural next task is wiring the client: `fetchTodayPlan()` calling the
+`today_plan` RPC, then `AppState` deriving logged state from it instead of the
+local `loggedSets` map keyed by plan position, then the Today and Log screens.
+
+**Only one session should do this.** It touches `supabase_service.dart`,
+`app_state.dart`, `today_screen.dart`, `log_screen.dart`, `progress_screen.dart`
+and `models.dart` together; two agents editing them concurrently will clobber
+each other.
+
+### Backend available to wire against
+
+| Call | Returns |
+|---|---|
+| `today_plan(uuid) -> jsonb` | prescription, last session's real sets, today's logged sets, prefill, `session_now`, `session_last` |
+| `open_session_for_today(uuid, text) -> uuid` | the session for the lifter's **local** day, creating it if needed |
+| `protein_target_for(uuid)` | `(grams, basis_kg, per_kg, rationale)` — goal-derived |
+| `sync_protein_target(uuid) -> int` | persists it to `nutrition_targets` |
+| `last_same_day_totals(uuid, text, date)` | the same program day, last time — matched by **label**, not id |
+| `v_bodyweight_trend` | `raw_kg` plus `avg_7d` 7-day trailing mean |
+| `user_today(uuid) -> date` | the lifter's local date |
+
+### Still not built (UX, no backend blocker)
+
+Rest timer from the prescribed `rest_seconds`; weight/reps persisting between
+sets; editing any set rather than only undoing the last; a session header with
+elapsed time and position; a prompt when the set target is met; and the
+session-level result line using `session_now` / `session_last`.
 
 ---
 
-## 2. Two invariants — do not break these
+## Reference — invariants, bugs, and the original test list
+
+### Two invariants — do not break these
 
 **The Edge Function must never use `service_role`.** It builds its Supabase
 client from the caller's JWT (`supabase/functions/coach/index.ts`), so every
@@ -118,10 +144,13 @@ Nothing below has been exercised.
 - [ ] **The `remember` tool** — `coach_memories` has never been written to.
 - [ ] **Offline fallback.** Kill the Edge Function (or go offline) and confirm
       chat still logs via the local regex parser.
-- [ ] **Double-confirm idempotency.** Server-guarded but never actually
-      double-tapped.
+- [x] ~~**Double-confirm idempotency.**~~ Verified against production: replaying
+      a confirm changes 0 rows.
+- [x] ~~**Profile round-trip.**~~ Verified: goal / experience / days / environment
+      all load back correctly through the enum↔display-label mapping.
 - [ ] **Deload / rest-day rendering** when `scheduled_workouts` has nothing for
-      today.
+      today. Not testable while a workout is scheduled — shift the slot forward
+      a day in SQL, check, then restore.
 
 ---
 
