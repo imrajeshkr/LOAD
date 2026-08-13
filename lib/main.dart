@@ -5,7 +5,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'theme/app_theme.dart';
 import 'services/app_state.dart';
-import 'screens/v2/nav_shell.dart';
+import 'screens/v2/root_gate.dart';
+import 'screens/v2/splash_v2.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,8 +29,25 @@ class LoadApp extends StatelessWidget {
         title: 'LOAD',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.theme,
-        home: const NavShell(),
+        home: const _Launch(),
       ),
     );
+  }
+}
+
+/// Plays the 1a splash once on cold start, then hands off to the app's front
+/// door. The splash is a brand moment, independent of auth state.
+class _Launch extends StatefulWidget {
+  const _Launch();
+  @override
+  State<_Launch> createState() => _LaunchState();
+}
+
+class _LaunchState extends State<_Launch> {
+  bool _done = false;
+  @override
+  Widget build(BuildContext context) {
+    if (_done) return const RootGate();
+    return SplashV2(onDone: () => setState(() => _done = true));
   }
 }

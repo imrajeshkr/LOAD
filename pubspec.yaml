@@ -54,19 +54,23 @@ dev_dependencies:
   flutter_native_splash: ^2.4.6
 
 flutter_launcher_icons:
-  image_path: "assets/logo/app_icon.png"
+  image_path: "assets/logo/app_icon_v2.png"
   android: true
   ios: true
   remove_alpha_ios: true
-  adaptive_icon_background: "#B94642"
-  adaptive_icon_foreground: "assets/logo/app_icon_foreground.png"
+  adaptive_icon_background: "#100E0D"
+  adaptive_icon_foreground: "assets/logo/app_icon_v2_foreground.png"
 
+# Cold-start frame is a flat dark ground; the animated 1a splash (SplashV2)
+# draws the mark, so the native frame stays imageless to avoid a static→animate
+# jump. Android 12+ forces the launcher icon, so it gets the mark on dark.
 flutter_native_splash:
-  color: "#FCF3EE"
-  image: "assets/logo/splash_lockup.png"
+  color: "#100E0D"
+  color_dark: "#100E0D"
   android_12:
-    color: "#FCF3EE"
-    image: "assets/logo/splash_lockup.png"
+    color: "#100E0D"
+    image: "assets/logo/app_icon_v2_foreground.png"
+    icon_background_color: "#100E0D"
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
