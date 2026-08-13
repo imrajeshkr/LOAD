@@ -22,6 +22,19 @@
 		<string>$(FLUTTER_BUILD_NAME)</string>
 		<key>CFBundleSignature</key>
 		<string>????</string>
+		<key>CFBundleURLTypes</key>
+		<array>
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<!-- Reversed form of GOOGLE_IOS_CLIENT_ID (.env) — Google's native
+					     sign-in sheet redirects back into the app via this scheme. -->
+					<string>com.googleusercontent.apps.558596590739-n9duqag5btvnv0vqv2g118iut3np1kgo</string>
+				</array>
+			</dict>
+		</array>
 		<key>CFBundleVersion</key>
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
 		<key>LSRequiresIPhoneOS</key>

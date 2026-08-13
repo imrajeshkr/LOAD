@@ -70,9 +70,13 @@ class _AuthScreenState extends State<AuthScreen> {
     setState(() => _error = null);
     try {
       await SupabaseService.instance.signInWithGoogle();
-    } catch (_) {
+    } catch (e) {
+      final msg = e.toString();
+      if (msg.contains('GoogleSignInException') || msg.contains('canceled')) {
+        return; // user dismissed the picker — not an error
+      }
       setState(() => _error =
-          "Google sign-in isn't enabled yet — turn it on in your Supabase auth providers.");
+          "Google sign-in isn't set up yet — see .env / Supabase Google provider.");
     }
   }
 

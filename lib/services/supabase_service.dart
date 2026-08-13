@@ -1,3 +1,4 @@
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 
@@ -50,11 +51,43 @@ class SupabaseService {
     await client.auth.signInWithPassword(email: email, password: password);
   }
 
+  /// Native Google sign-in: the platform account picker returns an ID token,
+  /// which Supabase verifies and exchanges for a session — no browser hop.
+  /// Requires GoogleSignIn.instance.initialize() to have run in main() with
+  /// GOOGLE_WEB_CLIENT_ID (and GOOGLE_IOS_CLIENT_ID on iOS) set in .env.
   Future<void> signInWithGoogle() async {
-    await client.auth.signInWithOAuth(OAuthProvider.google);
+    final account = await GoogleSignIn.instance.authenticate();
+    final idToken = account.authentication.idToken;
+    if (idToken == null) {
+      throw StateError('Google did not return an ID token.');
+    }
+    await client.auth.signInWithIdToken(
+      provider: OAuthProvider.google,
+      idToken: idToken,
+    );
   }
 
   Future<void> signOut() async {
+    _programDayId = null;
+    _threadId = null;
+    _exerciseIdsByName.clear();
+    _sessionExerciseIds.clear();
+    await client.auth.signOut();
+  }
+
+  /// Permanently deletes the signed-in user's account: every session, set,
+  /// program, coach thread, measurement, and progress photo. Irreversible —
+  /// the caller is responsible for confirming with the user first. Calls the
+  /// `delete-account` Edge Function (service_role only lives server-side);
+  /// the function reads the target user from the request's own JWT, so this
+  /// can only ever delete the account making the call.
+  Future<void> deleteAccount() async {
+    final res = await client.functions.invoke('delete-account');
+    if (res.status != 200) {
+      final body = res.data;
+      final msg = body is Map ? body['error']?.toString() : null;
+      throw StateError(msg ?? 'Account deletion failed (${res.status}).');
+    }
     _programDayId = null;
     _threadId = null;
     _exerciseIdsByName.clear();
