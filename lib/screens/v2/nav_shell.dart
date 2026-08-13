@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
+import 'train_placeholder.dart';
 
 /// v2 bottom nav: four tabs, the active one expands into a lime pill and
 /// reveals its label. Inactive tabs are icon-only. Floats 30px above the edge.
@@ -23,42 +24,57 @@ class _NavShellState extends State<NavShell> {
 
   @override
   Widget build(BuildContext context) {
+    // The pill floats over the body (design), but it must be the ONLY thing
+    // hit-testable at the bottom — a full-width bottomNavigationBar slot with
+    // extendBody swallows taps in the empty space above the pill. So stack it
+    // and let taps pass through everywhere except the pill's own box.
     return Scaffold(
       backgroundColor: AppColors.page,
-      body: IndexedStack(
-        index: _index,
-        children: const [
-          _Placeholder('Train'),
-          _Placeholder('Progress'),
-          _Placeholder('Trainer'),
-          _Placeholder('Profile'),
-        ],
-      ),
-      extendBody: true,
-      bottomNavigationBar: SafeArea(
-        top: false,
-        minimum: const EdgeInsets.only(bottom: 30),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Container(
-            padding: const EdgeInsets.all(5),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(AppRadii.pill + 4),
-              border: Border.all(color: AppColors.border),
-            ),
-            child: Row(
-              children: [
-                for (var i = 0; i < _tabs.length; i++)
-                  _NavTab(
-                    spec: _tabs[i],
-                    active: i == _index,
-                    onTap: () => setState(() => _index = i),
-                  ),
+      body: Stack(
+        children: [
+          // Reserve the floating pill's footprint so screen content never
+          // sits behind it (the pill is drawn on top and would eat those taps).
+          Padding(
+            padding: const EdgeInsets.only(bottom: 96),
+            child: IndexedStack(
+              index: _index,
+              children: const [
+                TrainPlaceholder(),
+                _Placeholder('Progress'),
+                _Placeholder('Trainer'),
+                _Placeholder('Profile'),
               ],
             ),
           ),
-        ),
+          Align(
+            alignment: Alignment.bottomCenter,
+            child: SafeArea(
+              top: false,
+              minimum: const EdgeInsets.only(bottom: 30),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(AppRadii.pill + 4),
+                    border: Border.all(color: AppColors.border),
+                  ),
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < _tabs.length; i++)
+                        _NavTab(
+                          spec: _tabs[i],
+                          active: i == _index,
+                          onTap: () => setState(() => _index = i),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

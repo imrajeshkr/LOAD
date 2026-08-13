@@ -1,0 +1,347 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import '../models/v2_models.dart';
+import 'supabase_service.dart';
+import 'supabase_service_v2.dart';
+
+enum FlowScreen { lift, review, done }
+
+/// One logged set, in progress or committed.
+class SetRow {
+  double? kg; // null for bodyweight
+  int reps;
+  SetRow(this.kg, this.reps);
+}
+
+/// Owns the in-session state machine for one workout. Created when a session
+/// starts, disposed when the finish screen is left. Nothing here mirrors
+/// server-derived plan data — the plan is read once into [exercises].
+class SessionController extends ChangeNotifier {
+  final _svc = SupabaseService.instance;
+
+  final String sessionId;
+  final String label;
+  final List<PlanExerciseV2> exercises;
+
+  SessionController({
+    required this.sessionId,
+    required this.label,
+    required this.exercises,
+    DateTime? startedAt,
+  }) : _startedAt = startedAt ?? DateTime.now() {
+    _sets = List.generate(exercises.length, (_) => <SetRow>[]);
+    _entry = List.filled(exercises.length, null);
+    _effort = List.filled(exercises.length, null);
+    _extra = List.filled(exercises.length, 0);
+    _unconfirmed = List.filled(exercises.length, false);
+    _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
+  }
+
+  // ── state ──────────────────────────────────────────────────────────────
+  FlowScreen screen = FlowScreen.lift;
+  int idx = 0;
+  final DateTime _startedAt;
+
+  late List<List<SetRow>> _sets;
+  late List<EntryModeV2?> _entry;
+  late List<EffortV2?> _effort;
+  late List<int> _extra; // delta on planned set count
+  late List<bool> _unconfirmed;
+
+  bool cuesOpen = true;
+  bool askFeel = false;
+
+  // staged (uncommitted) values for the next live set; null = use computed
+  double? _stagedKg;
+  int? _stagedReps;
+
+  String? situation;
+
+  Timer? _elapsedTimer;
+  Timer? _restTimer;
+  int? _restRemaining;
+  int _restTotal = 0;
+
+  // ── derived ──────────────────────────────────────────────────────────────
+  PlanExerciseV2 get ex => exercises[idx];
+  List<SetRow> get sets => _sets[idx];
+  EntryModeV2? get entry => _entry[idx];
+  EffortV2? get effort => _effort[idx];
+
+  int get elapsedMin => DateTime.now().difference(_startedAt).inMinutes;
+  String get elapsedLabel {
+    final s = DateTime.now().difference(_startedAt).inSeconds;
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  int target(int i) {
+    final base = situation == 'time'
+        ? (exercises[i].setsTarget < 2 ? exercises[i].setsTarget : 2)
+        : exercises[i].setsTarget;
+    return (base + _extra[i]).clamp(1, 30);
+  }
+
+  double planKg(int i) {
+    final e = exercises[i];
+    if (e.isBodyweight) return 0;
+    if (situation != 'energy') return e.prefillKg;
+    final step = e.step;
+    return (((e.prefillKg * 0.9) / step).round() * step).toDouble();
+  }
+
+  /// Prefill for the next set: explicit edit wins, else previous set today,
+  /// else the plan (weight) / top of range (reps).
+  (double, int) staged() {
+    final e = ex;
+    final done = _sets[idx];
+    final last = done.isNotEmpty ? done.last : null;
+    final w = _stagedKg ?? (last?.kg ?? planKg(idx));
+    final r = _stagedReps ?? (last?.reps ?? e.repHigh);
+    return (w, r);
+  }
+
+  bool get exDone => _sets[idx].length >= target(idx);
+  bool get resting => _restRemaining != null;
+  int get restRemaining => _restRemaining ?? 0;
+  String get restClock =>
+      '${restRemaining ~/ 60}:${(restRemaining % 60).toString().padLeft(2, '0')}';
+  double get restPct => _restTotal == 0 ? 0 : (_restTotal - restRemaining) / _restTotal;
+
+  int setsLogged(int i) => _sets[i].length;
+  bool exerciseDeferred(int i) => _entry[i] == EntryModeV2.deferred;
+
+  int get totalSets => _sets.fold(0, (n, l) => n + l.length);
+  double get totalVolume => _sets.fold(0.0, (v, l) =>
+      v + l.fold(0.0, (s, r) => s + (r.kg ?? 0) * r.reps));
+
+  bool get anyDeferred =>
+      _entry.asMap().entries.any((e) => e.value == EntryModeV2.deferred && _unconfirmed[e.key]);
+
+  // ── mutations ────────────────────────────────────────────────────────────
+  void adjustStagedWeight(double delta) {
+    final e = ex;
+    final cur = _stagedKg ?? staged().$1;
+    _stagedKg = (cur + delta).clamp(0, 999);
+    e.isBodyweight; // no-op guard
+    notifyListeners();
+  }
+
+  void adjustStagedReps(int delta) {
+    final cur = _stagedReps ?? staged().$2;
+    _stagedReps = (cur + delta).clamp(1, 99);
+    notifyListeners();
+  }
+
+  void adjustSet(int setIdx, {double? dKg, int? dReps}) {
+    final row = _sets[idx][setIdx];
+    if (dKg != null && row.kg != null) row.kg = (row.kg! + dKg).clamp(0, 999);
+    if (dReps != null) row.reps = (row.reps + dReps).clamp(1, 99);
+    _persist();
+    notifyListeners();
+  }
+
+  void toggleCues() {
+    cuesOpen = !cuesOpen;
+    notifyListeners();
+  }
+
+  void startLive() {
+    _entry[idx] = EntryModeV2.live;
+    notifyListeners();
+  }
+
+  /// Log the currently-staged set (live mode).
+  Future<void> logSet(bool askEffort) async {
+    final e = ex;
+    final st = staged();
+    _sets[idx].add(SetRow(e.isBodyweight ? null : st.$1, st.$2));
+    _entry[idx] = EntryModeV2.live;
+    _stagedKg = null;
+    _stagedReps = null;
+    cuesOpen = false;
+
+    final n = _sets[idx].length;
+    askFeel = askEffort && n == 1 && _effort[idx] == null;
+
+    await _persist();
+    if (!askFeel && n < target(idx)) _startRest(e.restSeconds);
+    notifyListeners();
+  }
+
+  void setEffort(EffortV2 v) {
+    _effort[idx] = v;
+    askFeel = false;
+    // "easy" bumps next set's weight one step.
+    if (v == EffortV2.easy && !ex.isBodyweight) {
+      _stagedKg = staged().$1 + ex.step;
+    }
+    // "all" closes the lift here: shrink target to what was done.
+    if (v == EffortV2.all) {
+      _extra[idx] = _sets[idx].length - exercises[idx].setsTarget;
+      _stopRest();
+    } else if (_sets[idx].length < target(idx)) {
+      _startRest(ex.restSeconds);
+    }
+    _persistExercise();
+    notifyListeners();
+  }
+
+  /// "Done all sets" — fill remaining rows with the staged values.
+  Future<void> fillRemaining() async {
+    final e = ex;
+    final st = staged();
+    while (_sets[idx].length < target(idx)) {
+      _sets[idx].add(SetRow(e.isBodyweight ? null : st.$1, st.$2));
+    }
+    _entry[idx] = EntryModeV2.bulk;
+    _unconfirmed[idx] = false;
+    askFeel = false;
+    _stopRest();
+    await _persist();
+    notifyListeners();
+  }
+
+  void deferLift() {
+    _entry[idx] = EntryModeV2.deferred;
+    _unconfirmed[idx] = true;
+    _stopRest();
+    notifyListeners();
+  }
+
+  void addSet() {
+    _extra[idx] += 1;
+    _entry[idx] = EntryModeV2.live;
+    notifyListeners();
+  }
+
+  void removeSet(int setIdx) {
+    if (setIdx < _sets[idx].length) {
+      _sets[idx].removeAt(setIdx);
+      _persist();
+    } else {
+      _extra[idx] -= 1;
+    }
+    notifyListeners();
+  }
+
+  Future<void> setSituation(String? s) async {
+    situation = s;
+    _stagedKg = null;
+    await _svc.setSituation(sessionId, s);
+    notifyListeners();
+  }
+
+  void advance() {
+    _stopRest();
+    if (idx >= exercises.length - 1) {
+      _finish();
+      return;
+    }
+    idx += 1;
+    cuesOpen = _sets[idx].isEmpty;
+    askFeel = false;
+    _stagedKg = null;
+    _stagedReps = null;
+    notifyListeners();
+  }
+
+  void skipRest() {
+    _stopRest();
+    notifyListeners();
+  }
+
+  void addRest() {
+    if (_restRemaining == null) return;
+    _restRemaining = _restRemaining! + 30;
+    _restTotal += 30;
+    _svc.setRestTimer(sessionId, startedFromSeconds: _restTotal);
+    notifyListeners();
+  }
+
+  void _startRest(int seconds) {
+    _restTimer?.cancel();
+    _restRemaining = seconds;
+    _restTotal = seconds;
+    _svc.setRestTimer(sessionId, startedFromSeconds: seconds);
+    _restTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      final left = (_restRemaining ?? 0) - 1;
+      if (left <= 0) {
+        _stopRest();
+      } else {
+        _restRemaining = left;
+      }
+      notifyListeners();
+    });
+  }
+
+  void _stopRest() {
+    _restTimer?.cancel();
+    _restTimer = null;
+    if (_restRemaining != null) {
+      _restRemaining = null;
+      _svc.setRestTimer(sessionId, startedFromSeconds: null);
+    }
+  }
+
+  void _finish() {
+    if (anyDeferred) {
+      screen = FlowScreen.review;
+    } else {
+      _completeAndDone();
+    }
+    notifyListeners();
+  }
+
+  /// Called from the finish button when not deferring, and from review.
+  Future<void> finishReview() async {
+    // Auto-fill any deferred lift the user never touched, at the plan.
+    for (var i = 0; i < exercises.length; i++) {
+      if (_unconfirmed[i] && _sets[i].isEmpty) {
+        final e = exercises[i];
+        for (var n = 0; n < target(i); n++) {
+          _sets[i].add(SetRow(e.isBodyweight ? null : planKg(i), e.repHigh));
+        }
+        await _svc.saveLift(
+          sessionId: sessionId,
+          exerciseId: e.exerciseId,
+          ordinal: e.ordinal,
+          rows: _sets[i].map((r) => (r.kg, r.reps)).toList(),
+          effort: _effort[i],
+          entryMode: EntryModeV2.deferred,
+          unconfirmed: true,
+        );
+      }
+      _unconfirmed[i] = false;
+    }
+    await _completeAndDone();
+  }
+
+  Future<void> _completeAndDone() async {
+    await _svc.finishSession(sessionId, situation: situation);
+    screen = FlowScreen.done;
+    notifyListeners();
+  }
+
+  // ── persistence ──────────────────────────────────────────────────────────
+  Future<void> _persist() async {
+    final e = ex;
+    await _svc.saveLift(
+      sessionId: sessionId,
+      exerciseId: e.exerciseId,
+      ordinal: e.ordinal,
+      rows: _sets[idx].map((r) => (r.kg, r.reps)).toList(),
+      effort: _effort[idx],
+      entryMode: _entry[idx] ?? EntryModeV2.live,
+      unconfirmed: _unconfirmed[idx],
+    );
+  }
+
+  Future<void> _persistExercise() async => _persist();
+
+  @override
+  void dispose() {
+    _elapsedTimer?.cancel();
+    _restTimer?.cancel();
+    super.dispose();
+  }
+}
