@@ -5,7 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'theme/app_theme.dart';
 import 'services/app_state.dart';
-import 'screens/splash_screen.dart';
+import 'screens/v2/nav_shell.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,8 +27,8 @@ class LoadApp extends StatelessWidget {
       child: MaterialApp(
         title: 'LOAD',
         debugShowCheckedModeBanner: false,
-        theme: AppTheme.light,
-        home: const SplashScreen(),
+        theme: AppTheme.theme,
+        home: const NavShell(),
       ),
     );
   }

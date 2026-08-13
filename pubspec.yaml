@@ -85,6 +85,9 @@ flutter:
     - assets/logo/
 
   fonts:
+    - family: Space Grotesk
+      fonts:
+        - asset: assets/fonts/SpaceGrotesk-VF.ttf
     - family: Nunito
       fonts:
         - asset: assets/fonts/Nunito-Regular.ttf
