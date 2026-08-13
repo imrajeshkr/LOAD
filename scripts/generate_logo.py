@@ -184,3 +184,42 @@ if __name__ == "__main__":
     render_icon()
     render_splash()
     print("done")
+
+
+def render_feature_graphic():
+    """1024x500 Play Store feature graphic: barbell + wordmark, landscape,
+    centered in the safe zone since Play crops edges differently per
+    placement (search results, banners, etc.)."""
+    w, h = 1024 * SS, 500 * SS
+    canvas = Image.new("RGBA", (w, h), ACCENT)
+
+    bar_scale = h / 100 * 0.6
+    draw_barbell(canvas, w * 0.28, h / 2, scale=bar_scale, bar_color=WHITE, plate_color=WHITE)
+
+    word_font = ImageFont.truetype(str(FONTS / "Nunito-ExtraBold.ttf"), int(90 * SS))
+    tag_font = ImageFont.truetype(str(FONTS / "Nunito-SemiBold.ttf"), int(26 * SS))
+    d = ImageDraw.Draw(canvas)
+
+    text_x = int(w * 0.52)
+    word = "LOAD"
+    bbox = d.textbbox((0, 0), word, font=word_font)
+    word_h = bbox[3] - bbox[1]
+    word_y = int(h * 0.36)
+    dot_r = int(13 * SS)
+    d.text((text_x - bbox[0], word_y - bbox[1]), word, font=word_font, fill=WHITE)
+    dot_cx = text_x + bbox[2] + int(10 * SS) + dot_r
+    dot_cy = word_y + word_h - dot_r * 0.6
+    d.ellipse([dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r], fill=(255, 255, 255, 255))
+
+    tag1 = "Personal training, computed"
+    tag2 = "from your actual history."
+    tag_y = word_y + word_h + int(26 * SS)
+    for i, line in enumerate((tag1, tag2)):
+        d.text((text_x, tag_y + i * int(36 * SS)), line, font=tag_font, fill=(255, 235, 230, 255))
+
+    canvas = canvas.resize((1024, 500), Image.LANCZOS)
+    canvas.convert("RGB").save(OUT / "feature_graphic.png", optimize=True)
+
+
+if __name__ == "__main__" and "render_feature_graphic" not in dir():
+    pass
