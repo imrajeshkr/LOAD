@@ -181,3 +181,254 @@ enum EffortV2 {
 
 /// How a lift was entered (session_exercises.entry_mode).
 enum EntryModeV2 { live, bulk, deferred }
+
+// ─────────────────────────────────────────────────────────────────────────
+// After-state: session_summary()
+// ─────────────────────────────────────────────────────────────────────────
+
+class SessionSummaryV2 {
+  final String label;
+  final DateTime performedOn;
+  final String? situation;
+  final int? durationMin;
+  final int setCount;
+  final double volumeKg;
+  final int exerciseCount;
+  final double? lastSameVolume; // previous same-label session volume, if any
+  final List<SummaryExerciseV2> exercises;
+  final List<MuscleChipV2> muscles;
+  final List<TrendPointV2> trend;
+  final List<PbV2> pbs;
+
+  const SessionSummaryV2({
+    required this.label,
+    required this.performedOn,
+    required this.situation,
+    required this.durationMin,
+    required this.setCount,
+    required this.volumeKg,
+    required this.exerciseCount,
+    required this.lastSameVolume,
+    required this.exercises,
+    required this.muscles,
+    required this.trend,
+    required this.pbs,
+  });
+
+  /// Signed "+155 vs last push" delta, or null when there's no prior session.
+  double? get vsLastDelta =>
+      lastSameVolume == null ? null : volumeKg - lastSameVolume!;
+
+  factory SessionSummaryV2.fromJson(Map<String, dynamic> j) {
+    final totals = (j['totals'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final last = (j['last_same'] as Map?)?.cast<String, dynamic>();
+    return SessionSummaryV2(
+      label: j['label'] as String? ?? 'Session',
+      performedOn: DateTime.parse(j['performed_on'] as String),
+      situation: j['situation'] as String?,
+      durationMin: (j['duration_min'] as num?)?.toInt(),
+      setCount: (totals['set_count'] as num?)?.toInt() ?? 0,
+      volumeKg: (totals['volume_kg'] as num?)?.toDouble() ?? 0,
+      exerciseCount: (totals['exercise_count'] as num?)?.toInt() ?? 0,
+      lastSameVolume: (last?['volume_kg'] as num?)?.toDouble(),
+      exercises: ((j['exercises'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(SummaryExerciseV2.fromJson)
+          .toList(),
+      muscles: ((j['muscles'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(MuscleChipV2.fromJson)
+          .toList(),
+      trend: ((j['trend'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(TrendPointV2.fromJson)
+          .toList(),
+      pbs: ((j['pbs'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(PbV2.fromJson)
+          .toList(),
+    );
+  }
+}
+
+class SummaryExerciseV2 {
+  final String name;
+  final String loadType;
+  final int ordinal;
+  final double volumeKg;
+  final int totalReps;
+  final int setCount;
+  final double? topKg;
+  final List<(double?, int)> sets;
+
+  const SummaryExerciseV2({
+    required this.name,
+    required this.loadType,
+    required this.ordinal,
+    required this.volumeKg,
+    required this.totalReps,
+    required this.setCount,
+    required this.topKg,
+    required this.sets,
+  });
+
+  bool get isBodyweight => loadType == 'bodyweight_reps';
+
+  factory SummaryExerciseV2.fromJson(Map<String, dynamic> j) {
+    final rawSets = (j['sets'] as List?) ?? const [];
+    return SummaryExerciseV2(
+      name: j['name'] as String,
+      loadType: (j['load_type'] as String?) ?? 'weight_reps',
+      ordinal: (j['ordinal'] as num?)?.toInt() ?? 0,
+      volumeKg: (j['volume_kg'] as num?)?.toDouble() ?? 0,
+      totalReps: (j['total_reps'] as num?)?.toInt() ?? 0,
+      setCount: (j['set_count'] as num?)?.toInt() ?? 0,
+      topKg: (j['top_kg'] as num?)?.toDouble(),
+      sets: rawSets
+          .whereType<List>()
+          .where((p) => p.length >= 2)
+          .map((p) => ((p[0] as num?)?.toDouble(), (p[1] as num?)?.toInt() ?? 0))
+          .toList(),
+    );
+  }
+}
+
+class MuscleChipV2 {
+  final String group;
+  final int sets;
+  const MuscleChipV2({required this.group, required this.sets});
+  factory MuscleChipV2.fromJson(Map<String, dynamic> j) => MuscleChipV2(
+        group: j['group'] as String? ?? '',
+        sets: (j['sets'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class TrendPointV2 {
+  final DateTime on;
+  final double volumeKg;
+  const TrendPointV2({required this.on, required this.volumeKg});
+  factory TrendPointV2.fromJson(Map<String, dynamic> j) => TrendPointV2(
+        on: DateTime.parse(j['on'] as String),
+        volumeKg: (j['volume_kg'] as num?)?.toDouble() ?? 0,
+      );
+}
+
+class PbV2 {
+  final String name;
+  final double? kg;
+  final int reps;
+  final int? prevReps;
+  const PbV2({required this.name, required this.kg, required this.reps, required this.prevReps});
+  factory PbV2.fromJson(Map<String, dynamic> j) => PbV2(
+        name: j['name'] as String? ?? '',
+        kg: (j['kg'] as num?)?.toDouble(),
+        reps: (j['reps'] as num?)?.toInt() ?? 0,
+        prevReps: (j['prev_reps'] as num?)?.toInt(),
+      );
+}
+
+/// One row of `progression_suggestions()` — "next time these go up".
+class ProgressionV2 {
+  final String exerciseId;
+  final String name;
+  final double? currentKg;
+  final double? suggestedKg;
+  final double deltaKg;
+  final String reason; // up | grind | unconfirmed | top_of_range | ...
+
+  const ProgressionV2({
+    required this.exerciseId,
+    required this.name,
+    required this.currentKg,
+    required this.suggestedKg,
+    required this.deltaKg,
+    required this.reason,
+  });
+
+  bool get goesUp => deltaKg > 0;
+
+  /// Human copy keyed off the reason enum from the RPC.
+  String get reasonLabel => switch (reason) {
+        'reps_in_reserve' => 'Had reps to spare',
+        'top_of_range' => 'Hit the top of the range',
+        'grind' => 'That was everything — hold',
+        'unconfirmed' => 'Last time was auto-filled — hold',
+        'building_reps' => 'Still building reps — hold',
+        'no_history' => 'No history yet',
+        _ => 'Hold',
+      };
+
+  factory ProgressionV2.fromJson(Map<String, dynamic> j) => ProgressionV2(
+        exerciseId: j['exercise_id'] as String,
+        name: j['name'] as String? ?? '',
+        currentKg: (j['current_kg'] as num?)?.toDouble(),
+        suggestedKg: (j['suggested_kg'] as num?)?.toDouble(),
+        deltaKg: (j['delta_kg'] as num?)?.toDouble() ?? 0,
+        reason: j['reason'] as String? ?? 'no_history',
+      );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Before-state extras: morning note + body/fuel
+// ─────────────────────────────────────────────────────────────────────────
+
+class MorningNoteV2 {
+  final String id;
+  final String content;
+  final DateTime createdAt;
+  final bool pinned;
+  final DateTime? readAt;
+  final DateTime? acknowledgedAt;
+  final List<ReceiptV2> receipts;
+
+  const MorningNoteV2({
+    required this.id,
+    required this.content,
+    required this.createdAt,
+    required this.pinned,
+    required this.readAt,
+    required this.acknowledgedAt,
+    required this.receipts,
+  });
+
+  factory MorningNoteV2.fromJson(Map<String, dynamic> j) => MorningNoteV2(
+        id: j['id'] as String,
+        content: j['content'] as String? ?? '',
+        createdAt: DateTime.parse(j['created_at'] as String),
+        pinned: j['pinned_until'] != null,
+        readAt: j['read_at'] == null ? null : DateTime.parse(j['read_at'] as String),
+        acknowledgedAt: j['acknowledged_at'] == null
+            ? null
+            : DateTime.parse(j['acknowledged_at'] as String),
+        receipts: ((j['receipts'] as List?) ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(ReceiptV2.fromJson)
+            .toList(),
+      );
+}
+
+class ReceiptV2 {
+  final String icon;
+  final String label;
+  const ReceiptV2({required this.icon, required this.label});
+  factory ReceiptV2.fromJson(Map<String, dynamic> j) => ReceiptV2(
+        icon: j['icon'] as String? ?? 'check',
+        label: j['label'] as String? ?? '',
+      );
+}
+
+class BodyFuelV2 {
+  final double? weightKg;
+  final double proteinG;
+  final int? proteinTargetG;
+
+  const BodyFuelV2({
+    required this.weightKg,
+    required this.proteinG,
+    required this.proteinTargetG,
+  });
+
+  int? get proteinShortfall => proteinTargetG == null
+      ? null
+      : (proteinTargetG! - proteinG).round().clamp(0, 1 << 30);
+}

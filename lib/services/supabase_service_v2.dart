@@ -174,4 +174,102 @@ extension SupabaseServiceV2 on SupabaseService {
         .from('workout_sessions')
         .update({'situation': situation}).eq('id', sessionId);
   }
+
+  // ── Train after-state ────────────────────────────────────────────────────
+
+  /// The completed-session recap: volume, bars, trend, muscles, PBs.
+  Future<SessionSummaryV2?> fetchSessionSummary(String sessionId) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final json = await client.rpc('session_summary',
+        params: {'p_user_id': uid, 'p_session_id': sessionId});
+    if (json is! Map) return null;
+    return SessionSummaryV2.fromJson(json.cast<String, dynamic>());
+  }
+
+  /// "Next time these go up" — one row per active-program lift.
+  Future<List<ProgressionV2>> fetchProgressions() async {
+    final uid = currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await client.rpc('progression_suggestions', params: {'p_user_id': uid});
+    if (rows is! List) return const [];
+    return rows
+        .cast<Map<String, dynamic>>()
+        .map(ProgressionV2.fromJson)
+        .toList();
+  }
+
+  // ── Train before-state extras ────────────────────────────────────────────
+
+  /// Today's pinned trainer note with its receipts, if the coach left one.
+  Future<MorningNoteV2?> fetchMorningNote() async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final row = await client
+        .from('coach_messages')
+        .select('id, content, created_at, pinned_until, read_at, acknowledged_at, '
+            'receipts:coach_message_receipts(icon, label, position)')
+        .eq('user_id', uid)
+        .eq('category', 'morning_note')
+        .order('created_at', ascending: false)
+        .limit(1)
+        .maybeSingle();
+    if (row == null) return null;
+    final receipts = (row['receipts'] as List?) ?? const [];
+    receipts.sort((a, b) =>
+        ((a as Map)['position'] as num).compareTo((b as Map)['position'] as num));
+    return MorningNoteV2.fromJson({...row, 'receipts': receipts});
+  }
+
+  /// Today's weight + protein against target, for the "Body & fuel today" card.
+  Future<BodyFuelV2> fetchBodyFuel() async {
+    final uid = currentUser?.id;
+    if (uid == null) {
+      return const BodyFuelV2(weightKg: null, proteinG: 0, proteinTargetG: null);
+    }
+    final today = _todayStr();
+
+    final weightRow = await client
+        .from('body_measurements')
+        .select('weight_kg')
+        .eq('user_id', uid)
+        .order('measured_on', ascending: false)
+        .limit(1)
+        .maybeSingle();
+
+    final proteinRows = await client
+        .from('nutrition_entries')
+        .select('protein_g')
+        .eq('user_id', uid)
+        .eq('logged_on', today);
+    final protein = (proteinRows as List).fold<double>(
+        0, (sum, r) => sum + ((r as Map)['protein_g'] as num).toDouble());
+
+    final targetRow = await client
+        .from('nutrition_targets')
+        .select('protein_g')
+        .eq('user_id', uid)
+        .isFilter('valid_to', null)
+        .maybeSingle();
+
+    return BodyFuelV2(
+      weightKg: (weightRow?['weight_kg'] as num?)?.toDouble(),
+      proteinG: protein,
+      proteinTargetG: (targetRow?['protein_g'] as num?)?.toInt(),
+    );
+  }
+
+  /// Mark a coach note read when the Train tab surfaces it.
+  Future<void> markNoteRead(String messageId) async {
+    await client.from('coach_messages').update({
+      'read_at': DateTime.now().toUtc().toIso8601String(),
+    }).eq('id', messageId).isFilter('read_at', null);
+  }
+
+  String _todayStr() {
+    final t = DateTime.now();
+    return '${t.year.toString().padLeft(4, '0')}-'
+        '${t.month.toString().padLeft(2, '0')}-'
+        '${t.day.toString().padLeft(2, '0')}';
+  }
 }

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
-import 'train_placeholder.dart';
+import 'train_screen.dart';
 
 /// v2 bottom nav: four tabs, the active one expands into a lime pill and
 /// reveals its label. Inactive tabs are icon-only. Floats 30px above the edge.
@@ -39,7 +39,7 @@ class _NavShellState extends State<NavShell> {
             child: IndexedStack(
               index: _index,
               children: const [
-                TrainPlaceholder(),
+                TrainTab(),
                 _Placeholder('Progress'),
                 _Placeholder('Trainer'),
                 _Placeholder('Profile'),
