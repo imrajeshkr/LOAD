@@ -20,8 +20,9 @@ class _SplashV2State extends State<SplashV2> with SingleTickerProviderStateMixin
   static const _total = 2500; // ms; keyframe delays below are /_total
   late final AnimationController _c;
 
-  // Rig geometry, scaled up ~3× from the 66px design plate.
-  static const _s = 3.0;
+  // Rig geometry, scaled from the 66px design plate. The full rest width is
+  // ~184·_s; keep it inside a phone's width (≈402pt) with margin to spare.
+  static const _s = 1.7;
 
   // Spring easing used for plates / bend / ring (gentle overshoot).
   static const _spring = Cubic(0.34, 1.4, 0.64, 1.0);
@@ -153,7 +154,7 @@ class _SplashV2State extends State<SplashV2> with SingleTickerProviderStateMixin
 
   // ── the barbell rig ────────────────────────────────────────────────────
   Widget _rig() {
-    final dist = 210.0; // fly-in distance
+    final dist = 150.0; // fly-in distance (plates start just off-screen)
     final off = (1 - _plate.value) * dist;
     final plateOpacity = (_plate.value * 1.6).clamp(0.0, 1.0);
     final bend = _bend.value * 4.5; // degrees
