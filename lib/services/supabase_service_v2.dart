@@ -348,6 +348,18 @@ extension SupabaseServiceV2 on SupabaseService {
     return PhotoPairV2.fromJson(json.cast<String, dynamic>());
   }
 
+  /// Short-lived signed URL for a progress photo (private bucket).
+  Future<String?> signedPhotoUrl(String path) async {
+    if (path.isEmpty) return null;
+    try {
+      return await client.storage
+          .from('progress-photos')
+          .createSignedUrl(path, 3600);
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Bodyweight series + 7-day average + weekly slope, computed client-side.
   Future<BodyTrendV2> fetchBodyTrend({DateTime? since}) async {
     final uid = currentUser?.id;

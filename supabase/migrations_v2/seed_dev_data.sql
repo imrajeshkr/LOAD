@@ -132,9 +132,12 @@ begin
     from joints j where j.slug = 'shoulder';
 
   -- ── two progress photos, 12 weeks apart ──────────────────────────────────
+  -- Path prefix must be the user id — the bucket's RLS scopes reads to
+  -- progress-photos/{user_id}/… so signed URLs resolve. Upload the objects
+  -- separately (see .local/my-pics) or the rows render as empty frames.
   insert into progress_photos (user_id, taken_on, storage_path, angle, note)
-  values (v_user, v_start, 'seed/front-first.jpg', 'front', 'seed'),
-         (v_user, current_date, 'seed/front-latest.jpg', 'front', 'seed');
+  values (v_user, v_start,       v_user || '/front-first.jpg',  'front', 'seed'),
+         (v_user, current_date,  v_user || '/front-latest.jpg', 'front', 'seed');
 
   -- ── one past ended pause (illness), so "weeks off don't count" has data ──
   insert into training_pauses (user_id, started_on, ended_on, reason, note)

@@ -1035,43 +1035,68 @@ class _PhotoSlot extends StatelessWidget {
   const _PhotoSlot({required this.photo, required this.caption});
   @override
   Widget build(BuildContext context) {
-    // Bucket is private; seed rows have no real object, so show a framed label
-    // rather than a broken image. Real uploads slot in here later.
     return AspectRatio(
       aspectRatio: 3 / 4,
-      child: Container(
-        decoration: BoxDecoration(
-          color: AppColors.surfaceSunken,
-          border: Border.all(color: AppColors.border),
-          borderRadius: BorderRadius.circular(14),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.end,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Spacer(),
-            const Center(child: Icon(Icons.image_outlined, size: 26, color: AppColors.textFaint)),
-            const Spacer(),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(caption,
-                      style: const TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12,
-                          color: AppColors.textPrimary)),
-                  Text(
-                      '${_fmtDayMonth(photo.takenOn)}'
-                      '${photo.weightKg != null ? ' · ${_n(photo.weightKg!)} kg' : ''}',
-                      style: const TextStyle(
-                          fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
-                ],
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          decoration: BoxDecoration(
+            color: AppColors.surfaceSunken,
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              FutureBuilder<String?>(
+                future: SupabaseService.instance.signedPhotoUrl(photo.storagePath),
+                builder: (context, snap) {
+                  final url = snap.data;
+                  if (url == null) {
+                    return const Center(
+                        child: Icon(Icons.image_outlined, size: 26, color: AppColors.textFaint));
+                  }
+                  return Image.network(url,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const Center(
+                          child: Icon(Icons.broken_image_outlined, size: 26, color: AppColors.textFaint)));
+                },
               ),
-            ),
-          ],
+              // Bottom gradient + label for legibility over the photo.
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  padding: const EdgeInsets.fromLTRB(12, 24, 12, 12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Colors.transparent, Colors.black.withValues(alpha: 0.7)],
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(caption,
+                          style: const TextStyle(
+                              fontFamily: AppTheme.fontFamily,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12,
+                              color: Colors.white)),
+                      Text(
+                          '${_fmtDayMonth(photo.takenOn)}'
+                          '${photo.weightKg != null ? ' · ${_n(photo.weightKg!)} kg' : ''}',
+                          style: TextStyle(
+                              fontFamily: AppTheme.fontFamily,
+                              fontSize: 10.5,
+                              color: Colors.white.withValues(alpha: 0.8))),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
