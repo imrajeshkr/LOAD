@@ -158,7 +158,8 @@ extension SupabaseServiceV2 on SupabaseService {
     }).eq('id', sessionId);
   }
 
-  /// Mark the session complete, stamping the situation adaptation if any.
+  /// Mark the session complete, stamping the situation adaptation if any, then
+  /// write the coach's debrief note from what actually happened.
   Future<void> finishSession(String sessionId, {String? situation}) async {
     await client.from('workout_sessions').update({
       'status': 'completed',
@@ -167,6 +168,9 @@ extension SupabaseServiceV2 on SupabaseService {
       'rest_started_at': null,
       'rest_total_seconds': null,
     }).eq('id', sessionId);
+    try {
+      await _writeSessionDebrief(sessionId);
+    } catch (_) {/* non-fatal: the session is saved either way */}
   }
 
   Future<void> setSituation(String sessionId, String? situation) async {
@@ -266,10 +270,616 @@ extension SupabaseServiceV2 on SupabaseService {
     }).eq('id', messageId).isFilter('read_at', null);
   }
 
-  String _todayStr() {
-    final t = DateTime.now();
-    return '${t.year.toString().padLeft(4, '0')}-'
-        '${t.month.toString().padLeft(2, '0')}-'
-        '${t.day.toString().padLeft(2, '0')}';
+  String _todayStr() => _dateStr(DateTime.now());
+
+  String _dateStr(DateTime t) => '${t.year.toString().padLeft(4, '0')}-'
+      '${t.month.toString().padLeft(2, '0')}-'
+      '${t.day.toString().padLeft(2, '0')}';
+
+  // ── Progress tab ─────────────────────────────────────────────────────────
+
+  Future<ProgressGatesV2?> fetchProgressGates() async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final json = await client.rpc('progress_gates', params: {'p_user_id': uid});
+    if (json is! Map) return null;
+    return ProgressGatesV2.fromJson(json.cast<String, dynamic>());
   }
+
+  Future<List<LiftStatusV2>> fetchLiftStatus({DateTime? since}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await client.rpc('lift_status', params: {
+      'p_user_id': uid,
+      'p_since': ?since == null ? null : _dateStr(since),
+    });
+    if (rows is! List) return const [];
+    return rows.cast<Map<String, dynamic>>().map(LiftStatusV2.fromJson).toList();
+  }
+
+  /// [(rirBucket, setCount)], bucket 0..6.
+  Future<List<(int, int)>> fetchEffortHistogram({DateTime? since}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await client.rpc('effort_histogram', params: {
+      'p_user_id': uid,
+      'p_since': ?since == null ? null : _dateStr(since),
+    });
+    if (rows is! List) return const [];
+    return rows
+        .cast<Map<String, dynamic>>()
+        .map((r) => ((r['rir_bucket'] as num).toInt(), (r['set_count'] as num).toInt()))
+        .toList();
+  }
+
+  Future<List<MuscleChipV2>> fetchMuscleSets({required DateTime since}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await client.rpc('weekly_sets_by_muscle',
+        params: {'p_user_id': uid, 'p_since': _dateStr(since)});
+    if (rows is! List) return const [];
+    return rows
+        .cast<Map<String, dynamic>>()
+        .map((r) => MuscleChipV2(
+            group: r['display_group'] as String? ?? '',
+            sets: (r['set_count'] as num?)?.toInt() ?? 0))
+        .toList();
+  }
+
+  Future<List<ConsistencyWeekV2>> fetchConsistency({DateTime? since}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await client.rpc('consistency_weeks', params: {
+      'p_user_id': uid,
+      'p_since': ?since == null ? null : _dateStr(since),
+    });
+    if (rows is! List) return const [];
+    return rows.cast<Map<String, dynamic>>().map(ConsistencyWeekV2.fromJson).toList();
+  }
+
+  Future<PhotoPairV2?> fetchPhotoPair({DateTime? since}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final json = await client.rpc('progress_photo_pair', params: {
+      'p_user_id': uid,
+      'p_since': ?since == null ? null : _dateStr(since),
+    });
+    if (json is! Map) return null;
+    return PhotoPairV2.fromJson(json.cast<String, dynamic>());
+  }
+
+  /// Bodyweight series + 7-day average + weekly slope, computed client-side.
+  Future<BodyTrendV2> fetchBodyTrend({DateTime? since}) async {
+    final uid = currentUser?.id;
+    if (uid == null) {
+      return const BodyTrendV2(sevenDayAvg: null, kgPerWeek: null, targetKg: null, points: []);
+    }
+    var q = client.from('body_measurements').select('measured_on, weight_kg').eq('user_id', uid);
+    if (since != null) q = q.gte('measured_on', _dateStr(since));
+    final rows = await q.order('measured_on', ascending: true);
+
+    final points = <(DateTime, double)>[];
+    for (final r in rows as List) {
+      final w = (r as Map)['weight_kg'] as num?;
+      if (w != null) points.add((DateTime.parse(r['measured_on'] as String), w.toDouble()));
+    }
+
+    final targetRow = await client
+        .from('training_profiles')
+        .select('target_weight_kg')
+        .eq('user_id', uid)
+        .isFilter('valid_to', null)
+        .maybeSingle();
+    final target = (targetRow?['target_weight_kg'] as num?)?.toDouble();
+
+    if (points.isEmpty) {
+      return BodyTrendV2(sevenDayAvg: null, kgPerWeek: null, targetKg: target, points: points);
+    }
+
+    // 7-day average: mean of weigh-ins within 7 days of the latest.
+    final latest = points.last.$1;
+    final window = points.where((p) => latest.difference(p.$1).inDays <= 7).toList();
+    final avg7 = window.fold<double>(0, (s, p) => s + p.$2) / window.length;
+
+    // Weekly slope via least squares over (days, weight).
+    double? kgPerWeek;
+    if (points.length >= 2) {
+      final base = points.first.$1;
+      final xs = points.map((p) => base.difference(p.$1).inDays.abs().toDouble()).toList();
+      final ys = points.map((p) => p.$2).toList();
+      final n = xs.length;
+      final mx = xs.reduce((a, b) => a + b) / n;
+      final my = ys.reduce((a, b) => a + b) / n;
+      var num = 0.0, den = 0.0;
+      for (var i = 0; i < n; i++) {
+        num += (xs[i] - mx) * (ys[i] - my);
+        den += (xs[i] - mx) * (xs[i] - mx);
+      }
+      if (den != 0) kgPerWeek = (num / den) * 7;
+    }
+
+    return BodyTrendV2(sevenDayAvg: avg7, kgPerWeek: kgPerWeek, targetKg: target, points: points);
+  }
+
+  /// Protein adherence over the trailing seven days.
+  Future<ProteinWeekV2> fetchProteinWeek() async {
+    final uid = currentUser?.id;
+    if (uid == null) {
+      return const ProteinWeekV2(hitDays: 0, loggedDays: 0, targetG: null, averageG: 0);
+    }
+    final since = _dateStr(DateTime.now().subtract(const Duration(days: 6)));
+    final rows = await client
+        .from('nutrition_entries')
+        .select('logged_on, protein_g')
+        .eq('user_id', uid)
+        .gte('logged_on', since);
+
+    final byDay = <String, double>{};
+    for (final r in rows as List) {
+      final d = (r as Map)['logged_on'] as String;
+      byDay[d] = (byDay[d] ?? 0) + ((r['protein_g'] as num?)?.toDouble() ?? 0);
+    }
+
+    final targetRow = await client
+        .from('nutrition_targets')
+        .select('protein_g')
+        .eq('user_id', uid)
+        .isFilter('valid_to', null)
+        .maybeSingle();
+    final target = (targetRow?['protein_g'] as num?)?.toInt();
+
+    final logged = byDay.length;
+    final hit = target == null ? 0 : byDay.values.where((v) => v >= target).length;
+    final avg = logged == 0 ? 0.0 : byDay.values.reduce((a, b) => a + b) / logged;
+    return ProteinWeekV2(hitDays: hit, loggedDays: logged, targetG: target, averageG: avg);
+  }
+
+  // ── Profile tab ────────────────────────────────────────────────────────────
+
+  /// One load for the whole Profile screen: identity, stats, plan inputs,
+  /// preferences, constraints, pause state. Named `…Screen` to avoid the base
+  /// service's `fetchProfile()` (a v1 method returning `Profile`).
+  Future<ProfileDataV2?> fetchProfileScreen() async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+
+    final results = await Future.wait(<Future<dynamic>>[
+      client.from('profiles').select('display_name').eq('id', uid).maybeSingle(),
+      client
+          .from('training_profiles')
+          .select('goals, goal_is_coach_choice, target_weight_kg, '
+              'target_direction, training_weekdays, bar_weight_kg, plate_sizes_kg')
+          .eq('user_id', uid)
+          .isFilter('valid_to', null)
+          .maybeSingle(),
+      client.from('user_preferences').select('*').eq('user_id', uid).maybeSingle(),
+      client
+          .from('body_measurements')
+          .select('weight_kg')
+          .eq('user_id', uid)
+          .order('measured_on', ascending: false)
+          .limit(1)
+          .maybeSingle(),
+      client
+          .from('user_constraints')
+          .select('label, side, joints(name)')
+          .eq('user_id', uid)
+          .isFilter('active_to', null),
+      client.rpc('is_training_paused', params: {'p_user_id': uid}),
+      client.rpc('progress_gates', params: {'p_user_id': uid}),
+    ]);
+
+    final profile = results[0] as Map<String, dynamic>?;
+    final tp = results[1] as Map<String, dynamic>? ?? const {};
+    final prefs = results[2] as Map<String, dynamic>?;
+    final weight = results[3] as Map<String, dynamic>?;
+    final constraints = (results[4] as List?) ?? const [];
+    final paused = results[5] == true;
+    final gates = (results[6] as Map?)?.cast<String, dynamic>() ?? const {};
+
+    return ProfileDataV2(
+      displayName: profile?['display_name'] as String?,
+      email: currentUser?.email,
+      sessionsTotal: (gates['sessions_total'] as num?)?.toInt() ?? 0,
+      weeksTraining: (gates['weeks_of_history'] as num?)?.toInt() ?? 0,
+      paused: paused,
+      goals: ((tp['goals'] as List?) ?? const [])
+          .cast<String>()
+          .map(GoalV2.fromDb)
+          .whereType<GoalV2>()
+          .toList(),
+      goalIsCoachChoice: tp['goal_is_coach_choice'] as bool? ?? false,
+      targetWeightKg: (tp['target_weight_kg'] as num?)?.toDouble(),
+      targetDirection: tp['target_direction'] as String?,
+      trainingWeekdays: ((tp['training_weekdays'] as List?) ?? const [])
+          .map((d) => (d as num).toInt())
+          .toList()
+        ..sort(),
+      barWeightKg: (tp['bar_weight_kg'] as num?)?.toDouble() ?? 20,
+      plateSizes: ((tp['plate_sizes_kg'] as List?) ?? const [])
+          .map((p) => (p as num).toDouble())
+          .toList(),
+      latestWeightKg: (weight?['weight_kg'] as num?)?.toDouble(),
+      constraints: constraints
+          .cast<Map<String, dynamic>>()
+          .map(ConstraintV2.fromJson)
+          .toList(),
+      prefs: PreferencesV2.fromJson(prefs ?? const {}),
+    );
+  }
+
+  /// Instant preference write-through (units, rest, effort, toggles).
+  Future<void> updatePreferences(Map<String, dynamic> patch) async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    await client.from('user_preferences').update(patch).eq('user_id', uid);
+  }
+
+  /// Instant plate-inventory write.
+  Future<void> updatePlateSizes(List<double> sizes) async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    final sorted = [...sizes]..sort((a, b) => b.compareTo(a));
+    await client
+        .from('training_profiles')
+        .update({'plate_sizes_kg': sorted})
+        .eq('user_id', uid)
+        .isFilter('valid_to', null);
+  }
+
+  /// Staged plan edits, committed on "Rewrite my week". Only the fields present
+  /// in [patch] are written; keys are training_profiles column names.
+  Future<void> updatePlanProfile(Map<String, dynamic> patch) async {
+    final uid = currentUser?.id;
+    if (uid == null || patch.isEmpty) return;
+    await client
+        .from('training_profiles')
+        .update(patch)
+        .eq('user_id', uid)
+        .isFilter('valid_to', null);
+  }
+
+  /// Open a pause (Ill / travelling / hurt). At most one open pause exists —
+  /// the DB enforces it — so this no-ops cleanly if already paused.
+  Future<void> pauseTraining({String reason = 'other'}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    await client.from('training_pauses').insert({'user_id': uid, 'reason': reason});
+  }
+
+  /// Close the open pause, stamping today as the end.
+  Future<void> resumeTraining() async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    await client
+        .from('training_pauses')
+        .update({'ended_on': _todayStr()})
+        .eq('user_id', uid)
+        .isFilter('ended_on', null);
+  }
+
+  // ── Onboarding ─────────────────────────────────────────────────────────────
+
+  /// Whether the signed-in user already has a generated plan. The root gate
+  /// uses this to route a returning user straight to the app, a fresh one to
+  /// the intake.
+  Future<bool> hasActiveProgram() async {
+    final uid = currentUser?.id;
+    if (uid == null) return false;
+    final row = await client
+        .from('programs')
+        .select('id')
+        .eq('user_id', uid)
+        .eq('status', 'active')
+        .limit(1)
+        .maybeSingle();
+    return row != null;
+  }
+
+  /// Body-map joints with their silhouette coordinates.
+  Future<List<JointV2>> fetchJoints() async {
+    final rows = await client
+        .from('joints')
+        .select('id, slug, name, map_view, map_x, map_y, is_lateral');
+    return rows.cast<Map<String, dynamic>>().map(JointV2.fromJson).toList();
+  }
+
+  /// Persist the whole intake and generate the first program. Runs the writes
+  /// in dependency order, then calls the generator (which archives any prior
+  /// active plan itself). Returns the new program id.
+  Future<String?> submitOnboarding(OnboardingDraft d) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+
+    // 1. The current training profile — inserted, since handle_new_user()
+    //    creates profiles + user_preferences but not this.
+    await client.from('training_profiles').insert({
+      'user_id': uid,
+      'goal': d.leadGoal.db,
+      'goals': d.goals.map((g) => g.db).toList(),
+      'goal_is_coach_choice': d.coachChoice,
+      'target_direction': d.targetDirection,
+      'target_weight_kg': d.targetWeightKg,
+      'training_weekdays': d.weekdaysIso,
+      'days_per_week': d.weekdaysIso.isEmpty ? 3 : d.weekdaysIso.length,
+      'split_preference': d.splitPreference,
+      'bar_weight_kg': d.barWeightKg,
+      'has_benched': d.hasBenched,
+    });
+
+    // 2. First weigh-in (the onboarding number is the first body_measurement).
+    await client.from('body_measurements').upsert({
+      'user_id': uid,
+      'measured_on': _todayStr(),
+      'weight_kg': d.bodyweightKg,
+      'source': 'manual',
+    }, onConflict: 'user_id,measured_on');
+
+    // 3. Units preference (row already exists from the signup trigger).
+    await client
+        .from('user_preferences')
+        .update({'units': d.metric ? 'metric' : 'imperial'}).eq('user_id', uid);
+
+    // 4. Injury flags + free-text note.
+    final constraints = <Map<String, dynamic>>[
+      for (final f in d.flags)
+        {
+          'user_id': uid,
+          'joint_id': f.jointId,
+          'label': f.label,
+          'side': f.side,
+          'severity': 'mild',
+          'active_from': _todayStr(),
+        },
+      if (d.otherPain.trim().isNotEmpty)
+        {
+          'user_id': uid,
+          'label': d.otherPain.trim(),
+          'severity': 'mild',
+          'active_from': _todayStr(),
+        },
+    ];
+    if (constraints.isNotEmpty) {
+      await client.from('user_constraints').insert(constraints);
+    }
+
+    // 5. Generate the first week (bench calibration only when they've benched).
+    final id = await client.rpc('bootstrap_my_program', params: {
+      'p_bench_start_kg': d.hasBenched ? d.benchStartKg : null,
+    });
+
+    // 6. Coach greeting + first pinned note, so a fresh account opens with
+    //    something in the Trainer tab and the Train "from your trainer" card.
+    try {
+      await _writeOnboardingNotes(d);
+    } catch (_) {/* non-fatal: the plan is what matters */}
+
+    return id as String?;
+  }
+
+  // ── Trainer tab ────────────────────────────────────────────────────────────
+
+  /// The whole coach thread for the user, oldest → newest, with receipts,
+  /// card content, and any attached proposal. Treated as one continuous
+  /// relationship, so messages across threads merge by time.
+  Future<List<CoachMessageV2>> fetchTrainerThread() async {
+    final uid = currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await client
+        .from('coach_messages')
+        .select('id, role, content, created_at, category, needs_attention, '
+            'read_at, acknowledged_at, pinned_until, card, '
+            'receipts:coach_message_receipts(icon, label, position), '
+            'proposals:coach_proposals(id, kind, status, payload)')
+        .eq('user_id', uid)
+        .order('created_at', ascending: true);
+    return (rows as List)
+        .cast<Map<String, dynamic>>()
+        .map(CoachMessageV2.fromJson)
+        .toList();
+  }
+
+  /// How many coach notes are unread — drives the nav badge on the Trainer tab.
+  Future<int> unreadCoachCount() async {
+    final uid = currentUser?.id;
+    if (uid == null) return 0;
+    final rows = await client
+        .from('coach_messages')
+        .select('id')
+        .eq('user_id', uid)
+        .eq('role', 'assistant')
+        .isFilter('read_at', null);
+    return (rows as List).length;
+  }
+
+  /// Mark every unread assistant note as read (clears the Train unread dot on
+  /// next open). Call after the tab has computed its unread divider.
+  Future<void> markCoachThreadRead() async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    await client
+        .from('coach_messages')
+        .update({'read_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('user_id', uid)
+        .eq('role', 'assistant')
+        .isFilter('read_at', null);
+  }
+
+  /// Resolve a note's decision (accept/reject). Records the decision on the
+  /// proposal; actually writing the program change forward is a server task
+  /// (F7 — `/coach/confirm` only executes `log_sets` today).
+  Future<void> resolveCoachProposal(String proposalId, {required bool accept}) async {
+    await client
+        .from('coach_proposals')
+        .update({
+          'status': accept ? 'confirmed' : 'rejected',
+          'resolved_at': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', proposalId)
+        .eq('status', 'pending');
+  }
+
+  /// The explicit "Got it" — distinct from having read the note.
+  Future<void> acknowledgeCoachMessage(String messageId) async {
+    await client
+        .from('coach_messages')
+        .update({'acknowledged_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('id', messageId)
+        .isFilter('acknowledged_at', null);
+  }
+
+  // ── Coach note generation (v1: on-completion, deterministic) ───────────────
+  // D7: notes are written when the triggering event happens — onboarding, a
+  // finished session — rather than by a cron. The AI coach still owns the
+  // conversational replies; these are the scheduled/triggered notes.
+
+  /// Get-or-create the user's coach thread.
+  Future<String?> _ensureCoachThread() async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final existing = await client
+        .from('coach_threads')
+        .select('id')
+        .eq('user_id', uid)
+        .order('last_message_at', ascending: false)
+        .limit(1)
+        .maybeSingle();
+    if (existing != null) return existing['id'] as String;
+    final row = await client
+        .from('coach_threads')
+        .insert({'user_id': uid, 'title': 'Coach'})
+        .select('id')
+        .single();
+    return row['id'] as String;
+  }
+
+  /// Write one assistant note with optional receipts and card, and bump the
+  /// thread's last-message time.
+  Future<void> _insertCoachNote({
+    required String threadId,
+    required String content,
+    String category = 'reply',
+    bool pinnedToday = false,
+    bool needsAttention = false,
+    List<(String, String)> receipts = const [],
+    Map<String, dynamic>? card,
+  }) async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    final msg = await client
+        .from('coach_messages')
+        .insert({
+          'user_id': uid,
+          'thread_id': threadId,
+          'role': 'assistant',
+          'content': content,
+          'category': category,
+          'needs_attention': needsAttention,
+          if (pinnedToday) 'pinned_until': _todayStr(),
+          'card': ?card,
+        })
+        .select('id')
+        .single();
+    if (receipts.isNotEmpty) {
+      final id = msg['id'] as String;
+      await client.from('coach_message_receipts').insert([
+        for (var i = 0; i < receipts.length; i++)
+          {
+            'user_id': uid,
+            'message_id': id,
+            'position': i,
+            'icon': receipts[i].$1,
+            'label': receipts[i].$2,
+          }
+      ]);
+    }
+    await client
+        .from('coach_threads')
+        .update({'last_message_at': DateTime.now().toUtc().toIso8601String()})
+        .eq('id', threadId);
+  }
+
+  /// Greeting + first pinned morning note, written once the plan is built.
+  Future<void> _writeOnboardingNotes(OnboardingDraft d) async {
+    final threadId = await _ensureCoachThread();
+    if (threadId == null) return;
+    final splitLabel = switch (d.splitPreference) {
+      'push_pull_legs' => 'Push / Pull / Legs',
+      'upper_lower' => 'Upper / Lower',
+      _ => 'Full body',
+    };
+    await _insertCoachNote(
+      threadId: threadId,
+      content: "Welcome in. I've built your first week — $splitLabel across "
+          "${d.weekdaysIso.length} days — from what you just told me. I move "
+          "loads off your effort answers, never a calendar, so everything "
+          "starts a little light and climbs when you're ready. Ask me anything.",
+      category: 'reply',
+    );
+    await _insertCoachNote(
+      threadId: threadId,
+      category: 'morning_note',
+      pinnedToday: true,
+      content: 'Day one starts a touch light on purpose. End every set with '
+          'about two reps still in you — that honest signal is what I use to '
+          'load the next session.'
+          '${d.flags.isNotEmpty ? " I'll route around what you flagged and warn you when a lift gets close." : ''}',
+      receipts: [
+        ('auto_awesome', 'Plan just built'),
+        ('flag', d.leadGoal.label),
+        if (d.flags.isNotEmpty) ('healing', d.flags.first.label),
+      ],
+    );
+  }
+
+  /// A debrief written when a session is finished, shaped by what happened.
+  Future<void> _writeSessionDebrief(String sessionId) async {
+    final s = await fetchSessionSummary(sessionId);
+    if (s == null || s.setCount == 0) return;
+    final threadId = await _ensureCoachThread();
+    if (threadId == null) return;
+
+    final vol = s.volumeKg.round();
+    final delta = s.vsLastDelta?.round();
+    final deltaClause = delta == null
+        ? ''
+        : delta >= 0
+            ? ' Up ${_grp(delta)} kg on your last ${s.label.toLowerCase()}.'
+            : ' A little under your last ${s.label.toLowerCase()} — fine on a heavier day.';
+    final pbClause = s.pbs.isEmpty
+        ? ''
+        : ' A personal best on ${s.pbs.first.name} — ${s.pbs.first.reps} reps'
+            '${s.pbs.first.kg == null ? '' : ' at ${_num(s.pbs.first.kg!)} kg'}.';
+    final content = '${s.label} done. ${s.setCount} sets, ${_grp(vol)} kg moved.'
+        '$deltaClause$pbClause Rest up — the adaptation happens now, not in the gym.';
+
+    await _insertCoachNote(
+      threadId: threadId,
+      category: 'session_debrief',
+      content: content,
+      card: {
+        'stats': [
+          {'value': '${s.setCount}', 'label': 'sets'},
+          {'value': _grp(vol), 'label': 'kg moved'},
+          if (delta != null)
+            {'value': '${delta >= 0 ? '+' : ''}${_grp(delta)}', 'label': 'vs last'}
+          else
+            {'value': '${s.durationMin ?? 0}', 'label': 'min'},
+        ],
+      },
+    );
+  }
+
+  static String _grp(int n) {
+    final s = n.abs().toString();
+    final b = StringBuffer(n < 0 ? '-' : '');
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
+      b.write(s[i]);
+    }
+    return b.toString();
+  }
+
+  static String _num(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
 }

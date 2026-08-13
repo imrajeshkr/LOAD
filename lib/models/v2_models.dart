@@ -432,3 +432,615 @@ class BodyFuelV2 {
       ? null
       : (proteinTargetG! - proteinG).round().clamp(0, 1 << 30);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Progress tab
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Raw counts from progress_gates(); the client owns the thresholds.
+class ProgressGatesV2 {
+  final int sessionsTotal;
+  final int weeksOfHistory;
+  final int maxLiftSessions;
+  final int rirAnsweredSets;
+  final int weighIns;
+  final int proteinDays;
+  final int photoCount;
+
+  const ProgressGatesV2({
+    required this.sessionsTotal,
+    required this.weeksOfHistory,
+    required this.maxLiftSessions,
+    required this.rirAnsweredSets,
+    required this.weighIns,
+    required this.proteinDays,
+    required this.photoCount,
+  });
+
+  // Design thresholds.
+  bool get hasStrength => maxLiftSessions >= 3;
+  bool get hasEffort => rirAnsweredSets >= 8;
+  bool get hasMuscle => weeksOfHistory >= 1;
+  bool get hasBody => weighIns >= 7;
+  bool get hasConsistency => weeksOfHistory >= 3;
+
+  factory ProgressGatesV2.fromJson(Map<String, dynamic> j) => ProgressGatesV2(
+        sessionsTotal: (j['sessions_total'] as num?)?.toInt() ?? 0,
+        weeksOfHistory: (j['weeks_of_history'] as num?)?.toInt() ?? 0,
+        maxLiftSessions: (j['max_lift_sessions'] as num?)?.toInt() ?? 0,
+        rirAnsweredSets: (j['rir_answered_sets'] as num?)?.toInt() ?? 0,
+        weighIns: (j['weigh_ins'] as num?)?.toInt() ?? 0,
+        proteinDays: (j['protein_days'] as num?)?.toInt() ?? 0,
+        photoCount: (j['photo_count'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// One row of lift_status(): feeds both the strength tiles and the stall panel.
+class LiftStatusV2 {
+  final String exerciseId;
+  final String name;
+  final int sessionsCounted;
+  final double? latestTopKg;
+  final double? latestE1rmKg;
+  final int streakSessions;
+  final int streakTopHits;
+  final double netChangeKg;
+  final String status; // insufficient | stalled | progressing | no_change
+  final List<double> e1rmSeries; // oldest-first, for the sparkline
+
+  const LiftStatusV2({
+    required this.exerciseId,
+    required this.name,
+    required this.sessionsCounted,
+    required this.latestTopKg,
+    required this.latestE1rmKg,
+    required this.streakSessions,
+    required this.streakTopHits,
+    required this.netChangeKg,
+    required this.status,
+    required this.e1rmSeries,
+  });
+
+  bool get stalled => status == 'stalled';
+
+  factory LiftStatusV2.fromJson(Map<String, dynamic> j) {
+    final rawSeries = (j['series'] as List?) ?? const [];
+    return LiftStatusV2(
+      exerciseId: j['exercise_id'] as String,
+      name: j['exercise_name'] as String? ?? '',
+      sessionsCounted: (j['sessions_counted'] as num?)?.toInt() ?? 0,
+      latestTopKg: (j['latest_top_kg'] as num?)?.toDouble(),
+      latestE1rmKg: (j['latest_e1rm_kg'] as num?)?.toDouble(),
+      streakSessions: (j['streak_sessions'] as num?)?.toInt() ?? 0,
+      streakTopHits: (j['streak_top_hits'] as num?)?.toInt() ?? 0,
+      netChangeKg: (j['net_change_kg'] as num?)?.toDouble() ?? 0,
+      status: j['status'] as String? ?? 'insufficient',
+      e1rmSeries: rawSeries
+          .whereType<Map>()
+          .map((p) => (p['e1rm'] as num?)?.toDouble() ?? 0)
+          .toList(),
+    );
+  }
+}
+
+class ConsistencyWeekV2 {
+  final DateTime weekStart;
+  final int sessionCount;
+  final int pausedDays;
+  final int target;
+  const ConsistencyWeekV2({
+    required this.weekStart,
+    required this.sessionCount,
+    required this.pausedDays,
+    required this.target,
+  });
+  bool get fullyPaused => pausedDays >= 7;
+  factory ConsistencyWeekV2.fromJson(Map<String, dynamic> j) => ConsistencyWeekV2(
+        weekStart: DateTime.parse(j['week_start'] as String),
+        sessionCount: (j['session_count'] as num?)?.toInt() ?? 0,
+        pausedDays: (j['paused_days'] as num?)?.toInt() ?? 0,
+        target: (j['target'] as num?)?.toInt() ?? 3,
+      );
+}
+
+class PhotoV2 {
+  final DateTime takenOn;
+  final String storagePath;
+  final double? weightKg;
+  const PhotoV2({required this.takenOn, required this.storagePath, required this.weightKg});
+  factory PhotoV2.fromJson(Map<String, dynamic> j) => PhotoV2(
+        takenOn: DateTime.parse(j['taken_on'] as String),
+        storagePath: j['storage_path'] as String? ?? '',
+        weightKg: (j['weight_kg'] as num?)?.toDouble(),
+      );
+}
+
+class PhotoPairV2 {
+  final int total;
+  final PhotoV2? first;
+  final PhotoV2? latest;
+  const PhotoPairV2({required this.total, required this.first, required this.latest});
+  factory PhotoPairV2.fromJson(Map<String, dynamic> j) => PhotoPairV2(
+        total: (j['total'] as num?)?.toInt() ?? 0,
+        first: j['first'] == null
+            ? null
+            : PhotoV2.fromJson((j['first'] as Map).cast<String, dynamic>()),
+        latest: j['latest'] == null
+            ? null
+            : PhotoV2.fromJson((j['latest'] as Map).cast<String, dynamic>()),
+      );
+}
+
+/// Bodyweight trend derived client-side from the weigh-in series.
+class BodyTrendV2 {
+  final double? sevenDayAvg;
+  final double? kgPerWeek; // negative = losing
+  final double? targetKg;
+  final List<(DateTime, double)> points; // oldest-first daily weigh-ins
+
+  const BodyTrendV2({
+    required this.sevenDayAvg,
+    required this.kgPerWeek,
+    required this.targetKg,
+    required this.points,
+  });
+}
+
+/// Protein adherence over the trailing week.
+class ProteinWeekV2 {
+  final int hitDays;
+  final int loggedDays;
+  final int? targetG;
+  final double averageG;
+  const ProteinWeekV2({
+    required this.hitDays,
+    required this.loggedDays,
+    required this.targetG,
+    required this.averageG,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Profile tab
+// ─────────────────────────────────────────────────────────────────────────
+
+/// The `training_goal` enum ↔ the design's five goal chips. The DB enum has no
+/// dedicated "rehab" value, so the last chip maps onto `recomposition`.
+enum GoalV2 {
+  buildMuscle('build_muscle', 'Build muscle'),
+  loseFat('lose_fat', 'Lose fat'),
+  strength('strength', 'Get stronger'),
+  generalHealth('general_health', 'Stay consistent'),
+  recomposition('recomposition', 'Rehab / return');
+
+  final String db;
+  final String label;
+  const GoalV2(this.db, this.label);
+
+  static GoalV2? fromDb(String v) {
+    for (final g in GoalV2.values) {
+      if (g.db == v) return g;
+    }
+    return null;
+  }
+}
+
+/// Instant preferences — `user_preferences`. Every field writes the moment it
+/// is tapped; this holds the local mirror so the switch/segment reflects it.
+class PreferencesV2 {
+  final bool metric; // units: metric ↔ kg, imperial ↔ lb
+  final int defaultRestSeconds;
+  final String effortPrompt; // first_set | every_set | never
+  final bool autoStartRest;
+  final bool keepScreenAwake;
+  final bool restEndSound;
+  final bool notifyMorning;
+  final bool notifyDebrief;
+  final bool notifyMissed;
+  final bool notifyWeekly;
+
+  const PreferencesV2({
+    required this.metric,
+    required this.defaultRestSeconds,
+    required this.effortPrompt,
+    required this.autoStartRest,
+    required this.keepScreenAwake,
+    required this.restEndSound,
+    required this.notifyMorning,
+    required this.notifyDebrief,
+    required this.notifyMissed,
+    required this.notifyWeekly,
+  });
+
+  PreferencesV2 copyWith({
+    bool? metric,
+    int? defaultRestSeconds,
+    String? effortPrompt,
+    bool? autoStartRest,
+    bool? keepScreenAwake,
+    bool? restEndSound,
+    bool? notifyMorning,
+    bool? notifyDebrief,
+    bool? notifyMissed,
+    bool? notifyWeekly,
+  }) =>
+      PreferencesV2(
+        metric: metric ?? this.metric,
+        defaultRestSeconds: defaultRestSeconds ?? this.defaultRestSeconds,
+        effortPrompt: effortPrompt ?? this.effortPrompt,
+        autoStartRest: autoStartRest ?? this.autoStartRest,
+        keepScreenAwake: keepScreenAwake ?? this.keepScreenAwake,
+        restEndSound: restEndSound ?? this.restEndSound,
+        notifyMorning: notifyMorning ?? this.notifyMorning,
+        notifyDebrief: notifyDebrief ?? this.notifyDebrief,
+        notifyMissed: notifyMissed ?? this.notifyMissed,
+        notifyWeekly: notifyWeekly ?? this.notifyWeekly,
+      );
+
+  factory PreferencesV2.fromJson(Map<String, dynamic> j) => PreferencesV2(
+        metric: (j['units'] as String? ?? 'metric') == 'metric',
+        defaultRestSeconds: (j['default_rest_seconds'] as num?)?.toInt() ?? 90,
+        effortPrompt: j['effort_prompt'] as String? ?? 'first_set',
+        autoStartRest: j['auto_start_rest'] as bool? ?? true,
+        keepScreenAwake: j['keep_screen_awake'] as bool? ?? true,
+        restEndSound: j['rest_end_sound'] as bool? ?? true,
+        notifyMorning: j['notify_morning_note'] as bool? ?? true,
+        notifyDebrief: j['notify_session_debrief'] as bool? ?? true,
+        notifyMissed: j['notify_missed_session'] as bool? ?? true,
+        notifyWeekly: j['notify_weekly_review'] as bool? ?? true,
+      );
+}
+
+/// One "Working around" entry — `user_constraints` joined to `joints`.
+class ConstraintV2 {
+  final String label;
+  final String? side; // left | right | bilateral | null
+  final String? jointName;
+
+  const ConstraintV2({required this.label, this.side, this.jointName});
+
+  /// "Left shoulder" — side-prefixed joint, falling back to the free-text label.
+  String get display {
+    if (jointName == null) return label;
+    final s = switch (side) {
+      'left' => 'Left ',
+      'right' => 'Right ',
+      'bilateral' => 'Both ',
+      _ => '',
+    };
+    return '$s${jointName!.toLowerCase()}'.trim().replaceFirstMapped(
+        RegExp(r'^\w'), (m) => m.group(0)!.toUpperCase());
+  }
+
+  factory ConstraintV2.fromJson(Map<String, dynamic> j) {
+    final joint = (j['joints'] as Map?)?.cast<String, dynamic>();
+    return ConstraintV2(
+      label: j['label'] as String? ?? '',
+      side: j['side'] as String?,
+      jointName: joint?['name'] as String?,
+    );
+  }
+}
+
+/// Everything the Profile tab renders, from one load.
+class ProfileDataV2 {
+  final String? displayName;
+  final String? email;
+  final int sessionsTotal;
+  final int weeksTraining;
+  final bool paused;
+  final List<GoalV2> goals;
+  final bool goalIsCoachChoice;
+  final double? targetWeightKg;
+  final String? targetDirection; // lose | maintain | gain | declined
+  final List<int> trainingWeekdays; // ISO 1=Mon..7=Sun
+  final double barWeightKg;
+  final List<double> plateSizes;
+  final double? latestWeightKg;
+  final List<ConstraintV2> constraints;
+  final PreferencesV2 prefs;
+
+  const ProfileDataV2({
+    required this.displayName,
+    required this.email,
+    required this.sessionsTotal,
+    required this.weeksTraining,
+    required this.paused,
+    required this.goals,
+    required this.goalIsCoachChoice,
+    required this.targetWeightKg,
+    required this.targetDirection,
+    required this.trainingWeekdays,
+    required this.barWeightKg,
+    required this.plateSizes,
+    required this.latestWeightKg,
+    required this.constraints,
+    required this.prefs,
+  });
+
+  double get sessionsPerWeek =>
+      weeksTraining == 0 ? 0 : sessionsTotal / weeksTraining;
+
+  /// "AK" from the display name; "—" when there's no name yet.
+  String get initials {
+    final name = displayName?.trim() ?? '';
+    if (name.isEmpty) return '—';
+    final parts = name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (parts.length == 1) return parts.first.substring(0, 1).toUpperCase();
+    return (parts.first.substring(0, 1) + parts.last.substring(0, 1))
+        .toUpperCase();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Onboarding
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A body-map joint with its silhouette coordinates, from `joints` (v2_0002).
+class JointV2 {
+  final String id;
+  final String slug;
+  final String name;
+  final String mapView; // front | back | both
+  final double mapX; // 0..1, lateral joints store the right side
+  final double mapY; // 0..1
+  final bool isLateral;
+
+  const JointV2({
+    required this.id,
+    required this.slug,
+    required this.name,
+    required this.mapView,
+    required this.mapX,
+    required this.mapY,
+    required this.isLateral,
+  });
+
+  factory JointV2.fromJson(Map<String, dynamic> j) => JointV2(
+        id: j['id'] as String,
+        slug: j['slug'] as String,
+        name: j['name'] as String? ?? '',
+        mapView: j['map_view'] as String? ?? 'front',
+        mapX: (j['map_x'] as num?)?.toDouble() ?? 0.5,
+        mapY: (j['map_y'] as num?)?.toDouble() ?? 0.5,
+        isLateral: j['is_lateral'] as bool? ?? false,
+      );
+}
+
+/// One flagged niggle chosen on the body map: a joint + which side.
+class OnboardingFlag {
+  final String jointId;
+  final String jointName;
+  final String side; // left | right | bilateral
+
+  const OnboardingFlag({
+    required this.jointId,
+    required this.jointName,
+    required this.side,
+  });
+
+  /// "Left shoulder" / "Neck".
+  String get label {
+    final prefix = switch (side) {
+      'left' => 'Left ',
+      'right' => 'Right ',
+      _ => '',
+    };
+    return '$prefix${jointName.toLowerCase()}'
+        .replaceFirstMapped(RegExp(r'^\w'), (m) => m.group(0)!.toUpperCase());
+  }
+
+  String get key => '$jointId|$side';
+}
+
+/// Everything the intake collects, submitted in one call at "Build my week".
+class OnboardingDraft {
+  final List<GoalV2> goals; // empty + coachChoice = "you choose"
+  final bool coachChoice;
+  final bool metric; // units toggle
+  final double bodyweightKg;
+  final String targetDirection; // lose | maintain | gain | declined
+  final double? targetWeightKg;
+  final List<int> weekdaysIso; // 1..7
+  final String splitPreference; // full_body | upper_lower | push_pull_legs
+  final double barWeightKg;
+  final bool hasBenched;
+  final double? benchStartKg; // calibrated total, null when never benched
+  final List<OnboardingFlag> flags;
+  final String otherPain;
+
+  const OnboardingDraft({
+    required this.goals,
+    required this.coachChoice,
+    required this.metric,
+    required this.bodyweightKg,
+    required this.targetDirection,
+    required this.targetWeightKg,
+    required this.weekdaysIso,
+    required this.splitPreference,
+    required this.barWeightKg,
+    required this.hasBenched,
+    required this.benchStartKg,
+    required this.flags,
+    required this.otherPain,
+  });
+
+  /// The single `training_profiles.goal` (NOT NULL): the lead pick, or general
+  /// strength when the user asked the coach to choose.
+  GoalV2 get leadGoal => goals.isEmpty ? GoalV2.strength : goals.first;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Trainer tab
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One stat tile inside a coach message card (`card.stats`).
+class CoachStatV2 {
+  final String value;
+  final String label;
+  const CoachStatV2({required this.value, required this.label});
+  factory CoachStatV2.fromJson(Map<String, dynamic> j) => CoachStatV2(
+        value: '${j['value'] ?? ''}',
+        label: j['label'] as String? ?? '',
+      );
+}
+
+/// Structured content snapshotted onto a message (`coach_messages.card`):
+/// stat tiles and/or an inline load sparkline.
+class CoachCardV2 {
+  final List<CoachStatV2> stats;
+  final List<double> chartPoints;
+  final String? chartStart;
+  final String? chartEnd;
+
+  const CoachCardV2({
+    required this.stats,
+    required this.chartPoints,
+    required this.chartStart,
+    required this.chartEnd,
+  });
+
+  bool get hasStats => stats.isNotEmpty;
+  bool get hasChart => chartPoints.length >= 2;
+
+  static CoachCardV2? fromJson(Map<String, dynamic>? j) {
+    if (j == null) return null;
+    final chart = (j['chart'] as Map?)?.cast<String, dynamic>();
+    final card = CoachCardV2(
+      stats: ((j['stats'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>()
+          .map(CoachStatV2.fromJson)
+          .toList(),
+      chartPoints: ((chart?['points'] as List?) ?? const [])
+          .map((p) => (p as num).toDouble())
+          .toList(),
+      chartStart: chart?['caption_start'] as String?,
+      chartEnd: chart?['caption_end'] as String?,
+    );
+    return (card.hasStats || card.hasChart) ? card : null;
+  }
+}
+
+/// A pending (or resolved) decision attached to a coach message — the "Go to
+/// 45 kg" / "Hold" buttons ride on `coach_proposals`.
+class CoachProposalV2 {
+  final String id;
+  final String kind; // log_sets | adjust_program
+  final String status; // pending | accepted | rejected
+  final List<String> actionLabels; // [accept, reject] if the payload named them
+
+  const CoachProposalV2({
+    required this.id,
+    required this.kind,
+    required this.status,
+    required this.actionLabels,
+  });
+
+  bool get pending => status == 'pending';
+
+  factory CoachProposalV2.fromJson(Map<String, dynamic> j) {
+    final payload = (j['payload'] as Map?)?.cast<String, dynamic>();
+    final labels = ((payload?['actions'] as List?) ?? const []).cast<String>();
+    return CoachProposalV2(
+      id: j['id'] as String,
+      kind: j['kind'] as String? ?? 'adjust_program',
+      status: j['status'] as String? ?? 'pending',
+      actionLabels: labels,
+    );
+  }
+}
+
+/// One message in the trainer thread — user or assistant, with its receipts,
+/// card, category, and read/ack/pin state.
+class CoachMessageV2 {
+  final String id;
+  final bool isUser;
+  final String content;
+  final DateTime createdAt;
+  final String category; // morning_note | session_debrief | decision | ...
+  final bool needsAttention;
+  final DateTime? readAt;
+  final DateTime? acknowledgedAt;
+  final DateTime? pinnedUntil;
+  final CoachCardV2? card;
+  final List<ReceiptV2> receipts;
+  final CoachProposalV2? proposal;
+
+  const CoachMessageV2({
+    required this.id,
+    required this.isUser,
+    required this.content,
+    required this.createdAt,
+    required this.category,
+    required this.needsAttention,
+    required this.readAt,
+    required this.acknowledgedAt,
+    required this.pinnedUntil,
+    required this.card,
+    required this.receipts,
+    required this.proposal,
+  });
+
+  bool get acknowledged => acknowledgedAt != null;
+
+  /// Pinned and still current (`pinned_until >= today`).
+  bool pinnedActiveOn(DateTime today) =>
+      pinnedUntil != null &&
+      !pinnedUntil!.isBefore(DateTime(today.year, today.month, today.day));
+
+  CoachMessageV2 copyWith({DateTime? acknowledgedAt, CoachProposalV2? proposal}) =>
+      CoachMessageV2(
+        id: id,
+        isUser: isUser,
+        content: content,
+        createdAt: createdAt,
+        category: category,
+        needsAttention: needsAttention,
+        readAt: readAt,
+        acknowledgedAt: acknowledgedAt ?? this.acknowledgedAt,
+        pinnedUntil: pinnedUntil,
+        card: card,
+        receipts: receipts,
+        proposal: proposal ?? this.proposal,
+      );
+
+  factory CoachMessageV2.fromJson(Map<String, dynamic> j) {
+    final receipts = ((j['receipts'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .toList()
+      ..sort((a, b) =>
+          ((a['position'] as num?) ?? 0).compareTo((b['position'] as num?) ?? 0));
+    final proposals = ((j['proposals'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(CoachProposalV2.fromJson)
+        .toList();
+    // Prefer a still-pending proposal; else the most recent resolved one.
+    CoachProposalV2? proposal;
+    for (final p in proposals) {
+      if (p.pending) {
+        proposal = p;
+        break;
+      }
+    }
+    proposal ??= proposals.isEmpty ? null : proposals.first;
+
+    DateTime? ts(String key) =>
+        j[key] == null ? null : DateTime.parse(j[key] as String).toLocal();
+
+    return CoachMessageV2(
+      id: j['id'] as String,
+      isUser: (j['role'] as String?) == 'user',
+      content: j['content'] as String? ?? '',
+      createdAt: DateTime.parse(j['created_at'] as String).toLocal(),
+      category: j['category'] as String? ?? 'reply',
+      needsAttention: j['needs_attention'] as bool? ?? false,
+      readAt: ts('read_at'),
+      acknowledgedAt: ts('acknowledged_at'),
+      pinnedUntil:
+          j['pinned_until'] == null ? null : DateTime.parse(j['pinned_until'] as String),
+      card: CoachCardV2.fromJson((j['card'] as Map?)?.cast<String, dynamic>()),
+      receipts: receipts.map(ReceiptV2.fromJson).toList(),
+      proposal: proposal,
+    );
+  }
+}
