@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
@@ -71,12 +72,12 @@ class _AuthScreenState extends State<AuthScreen> {
     try {
       await SupabaseService.instance.signInWithGoogle();
     } catch (e) {
-      final msg = e.toString();
-      if (msg.contains('GoogleSignInException') || msg.contains('canceled')) {
-        return; // user dismissed the picker — not an error
+      // Dismissing the account picker isn't an error worth showing.
+      if (e is GoogleSignInException &&
+          e.code == GoogleSignInExceptionCode.canceled) {
+        return;
       }
-      setState(() => _error =
-          "Google sign-in isn't set up yet — see .env / Supabase Google provider.");
+      setState(() => _error = "Couldn't sign in with Google — please try again.");
     }
   }
 
