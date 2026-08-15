@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
@@ -20,6 +21,7 @@ class NavShell extends StatefulWidget {
 class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
   int _index = 0;
   bool _coachUnread = false;
+  final _pendingAsk = ValueNotifier<String?>(null);
 
   static const _trainerIndex = 2;
 
@@ -40,7 +42,15 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _pendingAsk.dispose();
     super.dispose();
+  }
+
+  /// Progress's stall cards call this to open the Trainer tab with a
+  /// pre-filled, ready-to-review question rather than sending it blind.
+  void _askTrainer(String question) {
+    _pendingAsk.value = question;
+    _onTab(_trainerIndex);
   }
 
   @override
@@ -51,18 +61,31 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
     }
   }
 
+  int _lastUnreadCount = 0;
+
   Future<void> _refreshUnread() async {
     try {
       final n = await SupabaseService.instance.unreadCoachCount();
-      if (mounted) setState(() => _coachUnread = n > 0);
+      if (!mounted) return;
+      // A genuinely new note arrived (not just re-confirming an existing
+      // one) while the app is open and the user isn't already looking at
+      // it — this is the one thing worth an audible ping (house decision:
+      // in-app sound only, no real push notification).
+      if (n > _lastUnreadCount) Haptics.alert();
+      _lastUnreadCount = n;
+      setState(() => _coachUnread = n > 0);
     } catch (_) {/* a missing badge is harmless */}
   }
 
   void _onTab(int i) {
+    if (i != _index) Haptics.selection();
     setState(() {
       _index = i;
       // Opening the Trainer tab reads the thread, so drop the badge at once.
-      if (i == _trainerIndex) _coachUnread = false;
+      if (i == _trainerIndex) {
+        _coachUnread = false;
+        _lastUnreadCount = 0;
+      }
     });
     // Any time the user lands on a non-Trainer tab, re-check the DB — this is
     // what surfaces a note written while they were elsewhere (a session
@@ -87,11 +110,11 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
             padding: const EdgeInsets.only(bottom: 96),
             child: IndexedStack(
               index: _index,
-              children: const [
-                TrainTab(),
-                ProgressTab(),
-                TrainerTab(),
-                ProfileTab(),
+              children: [
+                const TrainTab(),
+                ProgressTab(onAskTrainer: _askTrainer),
+                TrainerTab(pendingAsk: _pendingAsk),
+                const ProfileTab(),
               ],
             ),
           ),

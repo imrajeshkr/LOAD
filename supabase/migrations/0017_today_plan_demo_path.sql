@@ -94,7 +94,10 @@ begin
       'rep_high',     p.rep_high,
       'rest_seconds', p.rest_seconds,
       'demo_path',    p.demo_path,
-      'prefill_kg',   coalesce((prev.sets -> -1 -> 0)::numeric, p.target_weight_kg, 0),
+      -- `->>` not `->`: a bodyweight set stores a JSON null weight, and casting
+      -- jsonb null straight to numeric throws 22023 and kills the whole plan
+      -- (and every caller, e.g. open_session_for_today → Start Session).
+      'prefill_kg',   coalesce((prev.sets -> -1 ->> 0)::numeric, p.target_weight_kg, 0),
       'prefill_reps', coalesce(p.rep_high, 10),
       'joints',       coalesce((select jsonb_agg(j.slug)
                                   from exercise_joints ej join joints j on j.id = ej.joint_id

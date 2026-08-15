@@ -10,7 +10,10 @@ import '../../widgets/v2_widgets.dart';
 /// leads, the chart is evidence, and nothing draws until there's enough data to
 /// judge it against — every panel has an explicit gated empty state.
 class ProgressTab extends StatefulWidget {
-  const ProgressTab({super.key});
+  /// Pushes a pre-filled question into the Trainer tab and switches to it —
+  /// wired by NavShell, which owns tab switching and the Trainer composer.
+  final void Function(String question) onAskTrainer;
+  const ProgressTab({super.key, required this.onAskTrainer});
   @override
   State<ProgressTab> createState() => _ProgressTabState();
 }
@@ -125,7 +128,7 @@ class _ProgressTabState extends State<ProgressTab> {
             const SizedBox(height: 22),
             _StrengthPanel(lifts: _lifts, gated: gates.hasStrength),
             const SizedBox(height: 26),
-            _StallPanel(lifts: _lifts, gated: gates.hasStrength),
+            _StallPanel(lifts: _lifts, gated: gates.hasStrength, onAsk: widget.onAskTrainer),
             const SizedBox(height: 26),
             _EffortPanel(buckets: _effort, gated: gates.hasEffort, answered: gates.rirAnsweredSets),
             const SizedBox(height: 26),
@@ -392,7 +395,8 @@ class _Sparkline extends CustomPainter {
 class _StallPanel extends StatelessWidget {
   final List<LiftStatusV2> lifts;
   final bool gated;
-  const _StallPanel({required this.lifts, required this.gated});
+  final void Function(String question) onAsk;
+  const _StallPanel({required this.lifts, required this.gated, required this.onAsk});
   @override
   Widget build(BuildContext context) {
     final tracked = lifts.where((l) => l.status != 'insufficient').toList();
@@ -411,7 +415,7 @@ class _StallPanel extends StatelessWidget {
               blurb: 'Nothing has stalled yet. Nothing could have.')
         else ...[
           for (final l in stalled) ...[
-            _StallCard(lift: l),
+            _StallCard(lift: l, onAsk: onAsk),
             const SizedBox(height: 10),
           ],
           if (stalled.isEmpty)
@@ -431,7 +435,8 @@ class _StallPanel extends StatelessWidget {
 
 class _StallCard extends StatelessWidget {
   final LiftStatusV2 lift;
-  const _StallCard({required this.lift});
+  final void Function(String question) onAsk;
+  const _StallCard({required this.lift, required this.onAsk});
   @override
   Widget build(BuildContext context) {
     final detail = '${lift.streakSessions} sessions at ${_n(lift.latestTopKg ?? 0)} kg, '
@@ -461,35 +466,42 @@ class _StallCard extends StatelessWidget {
               style: const TextStyle(
                   fontFamily: AppTheme.fontFamily, fontSize: 12.5, height: 1.4, color: AppColors.textSecondary)),
           const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceSunken,
-              borderRadius: BorderRadius.circular(12),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => onAsk(
+              'My ${lift.name.toLowerCase()} has been stuck at ${_n(lift.latestTopKg ?? 0)} kg '
+              'for ${lift.streakSessions} sessions — what should I do?',
             ),
-            child: Row(
-              children: [
-                const Icon(Icons.chat_bubble_outline_rounded, size: 15, color: AppColors.accent),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Ask the trainer about ${lift.name.toLowerCase()}',
-                          style: const TextStyle(
-                              fontFamily: AppTheme.fontFamily,
-                              fontWeight: FontWeight.w500,
-                              fontSize: 12.5,
-                              color: AppColors.textPrimary)),
-                      const SizedBox(height: 1),
-                      const Text('Sends this lift’s recent sessions',
-                          style: TextStyle(
-                              fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
-                    ],
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceSunken,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.chat_bubble_outline_rounded, size: 15, color: AppColors.accent),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Ask the trainer about ${lift.name.toLowerCase()}',
+                            style: const TextStyle(
+                                fontFamily: AppTheme.fontFamily,
+                                fontWeight: FontWeight.w500,
+                                fontSize: 12.5,
+                                color: AppColors.textPrimary)),
+                        const SizedBox(height: 1),
+                        const Text('Sends this lift’s recent sessions',
+                            style: TextStyle(
+                                fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
+                      ],
+                    ),
                   ),
-                ),
-                const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.textFaint),
-              ],
+                  const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.textFaint),
+                ],
+              ),
             ),
           ),
         ],

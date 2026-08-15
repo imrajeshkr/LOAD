@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../models/v2_models.dart';
+import 'haptics.dart';
 import 'supabase_service.dart';
 import 'supabase_service_v2.dart';
 
@@ -23,17 +24,43 @@ class SessionController extends ChangeNotifier {
   final String label;
   final List<PlanExerciseV2> exercises;
 
+  /// 'first_set' | 'every_set' | 'never' — from user_preferences.effort_prompt,
+  /// read once at session start (Profile's "Ask how the set felt" toggle).
+  final String effortPrompt;
+
   SessionController({
     required this.sessionId,
     required this.label,
     required this.exercises,
+    this.effortPrompt = 'first_set',
     DateTime? startedAt,
+    Map<int, ResumedLiftV2> resume = const {},
   }) : _startedAt = startedAt ?? DateTime.now() {
     _sets = List.generate(exercises.length, (_) => <SetRow>[]);
     _entry = List.filled(exercises.length, null);
     _effort = List.filled(exercises.length, null);
     _extra = List.filled(exercises.length, 0);
     _unconfirmed = List.filled(exercises.length, false);
+
+    // Rehydrate from what's already logged, so "Continue session" actually
+    // continues — otherwise every resume silently started blank at lift one.
+    var firstIncomplete = 0;
+    var foundIncomplete = false;
+    for (var i = 0; i < exercises.length; i++) {
+      final r = resume[exercises[i].ordinal];
+      if (r != null && r.sets.isNotEmpty) {
+        _sets[i] = r.sets.map((s) => SetRow(s.$1, s.$2)).toList();
+        _entry[i] = r.entryMode;
+        _effort[i] = r.effort;
+        _unconfirmed[i] = r.unconfirmed;
+      }
+      if (!foundIncomplete && _sets[i].length < exercises[i].setsTarget) {
+        firstIncomplete = i;
+        foundIncomplete = true;
+      }
+    }
+    idx = foundIncomplete ? firstIncomplete : 0;
+
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
   }
 
@@ -109,6 +136,9 @@ class SessionController extends ChangeNotifier {
 
   int setsLogged(int i) => _sets[i].length;
   bool exerciseDeferred(int i) => _entry[i] == EntryModeV2.deferred;
+  /// True once a deferred lift has been given real numbers in the review
+  /// screen (tapped open, edited, saved) rather than left to auto-fill.
+  bool exerciseConfirmed(int i) => !_unconfirmed[i] && _sets[i].isNotEmpty;
 
   int get totalSets => _sets.fold(0, (n, l) => n + l.length);
   double get totalVolume => _sets.fold(0.0, (v, l) =>
@@ -150,8 +180,10 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Log the currently-staged set (live mode).
-  Future<void> logSet(bool askEffort) async {
+  /// Log the currently-staged set (live mode). Whether this prompts for
+  /// effort depends on [effortPrompt]: once after the first set, after every
+  /// set, or never (Profile's "Ask how the set felt").
+  Future<void> logSet() async {
     final e = ex;
     final st = staged();
     _sets[idx].add(SetRow(e.isBodyweight ? null : st.$1, st.$2));
@@ -161,8 +193,13 @@ class SessionController extends ChangeNotifier {
     cuesOpen = false;
 
     final n = _sets[idx].length;
-    askFeel = askEffort && n == 1 && _effort[idx] == null;
+    askFeel = switch (effortPrompt) {
+      'never' => false,
+      'every_set' => true,
+      _ => n == 1 && _effort[idx] == null, // first_set (default)
+    };
 
+    Haptics.tap();
     await _persist();
     if (!askFeel && n < target(idx)) _startRest(e.restSeconds);
     notifyListeners();
@@ -292,6 +329,25 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Confirm real numbers for a deferred lift, from the review screen's
+  /// inline editor — replaces the plan's guessed prefill with what actually
+  /// happened, and persists immediately so it survives leaving the screen.
+  Future<void> saveDeferredLift(int i, List<(double?, int)> rows) async {
+    Haptics.tap();
+    _sets[i] = rows.map((r) => SetRow(r.$1, r.$2)).toList();
+    _unconfirmed[i] = false;
+    await _svc.saveLift(
+      sessionId: sessionId,
+      exerciseId: exercises[i].exerciseId,
+      ordinal: exercises[i].ordinal,
+      rows: rows,
+      effort: _effort[i],
+      entryMode: EntryModeV2.deferred,
+      unconfirmed: false,
+    );
+    notifyListeners();
+  }
+
   /// Called from the finish button when not deferring, and from review.
   Future<void> finishReview() async {
     // Auto-fill any deferred lift the user never touched, at the plan.
@@ -317,6 +373,7 @@ class SessionController extends ChangeNotifier {
   }
 
   Future<void> _completeAndDone() async {
+    Haptics.success();
     await _svc.finishSession(sessionId, situation: situation);
     screen = FlowScreen.done;
     notifyListeners();

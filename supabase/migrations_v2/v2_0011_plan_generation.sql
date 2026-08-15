@@ -48,6 +48,7 @@ declare
   v_is_bench  boolean;
   v_kg        numeric;
   v_is_barbell boolean;
+  v_has_history boolean;
   v_slot      int := 0;
   v_d         date;
   v_day_ids   uuid[];
@@ -139,28 +140,35 @@ begin
          order by muscle_id, default_rep_low nulls last, slug
       )
       select b.id, b.slug, b.default_rep_low, b.default_rep_high, b.uses_barbell,
-             coalesce(
-               (select max(db.top_weight_kg)
-                  from v_exercise_daily_bests db
-                 where db.user_id = p_user_id and db.exercise_id = b.id),
-               b.default_start_kg
-             ) as start_kg
+             (select max(db.top_weight_kg)
+                from v_exercise_daily_bests db
+               where db.user_id = p_user_id and db.exercise_id = b.id) as history_kg,
+             b.default_start_kg
         from best_per_muscle b
        order by b.default_rep_low nulls last, b.slug
        limit 4
     loop
-      v_ordinal   := v_ordinal + 1;
-      v_is_bench  := v_ex.slug = 'bench-press';
+      v_ordinal    := v_ordinal + 1;
+      v_is_bench   := v_ex.slug = 'bench-press';
       v_is_barbell := v_ex.uses_barbell;
-      v_kg        := v_ex.start_kg;
+      v_has_history := v_ex.history_kg is not null;
+      v_kg         := coalesce(v_ex.history_kg, v_ex.default_start_kg);
 
       -- The onboarding calibration wins over history/defaults for bench.
       if v_is_bench and p_bench_start_kg is not null then
         v_kg := p_bench_start_kg;
+        v_has_history := true; -- a fresh calibration is not a beginner guess
       end if;
-      -- Never benched: the empty bar, week one, whatever else says.
-      if v_is_bench and v_tp.has_benched is false then
-        v_kg := coalesce(v_tp.bar_weight_kg, 20);
+      -- Never benched is our only "brand new lifter" signal (v2 never asks
+      -- experience directly). Applies to every compound, not just bench, but
+      -- only when there is no real logged history to override — a lifter who
+      -- has actually done the movement keeps "loads stay where they are".
+      if v_tp.has_benched is false and not v_has_history then
+        if v_is_barbell then
+          v_kg := coalesce(v_tp.bar_weight_kg, 20);
+        elsif v_kg is not null and v_kg > 0 then
+          v_kg := round(v_kg * 0.4, 1);
+        end if;
       end if;
       -- A barbell load must be buildable from the user's plates.
       if v_is_barbell and v_kg is not null then

@@ -17,11 +17,25 @@ class SessionFlowScreen extends StatelessWidget {
     final c = context.watch<SessionController>();
     return Scaffold(
       backgroundColor: AppColors.page,
-      body: switch (c.screen) {
-        FlowScreen.lift => _LiftScreen(c: c),
-        FlowScreen.review => _ReviewScreen(c: c),
-        FlowScreen.done => _DoneScreen(c: c),
-      },
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 320),
+        switchInCurve: const Cubic(0.22, 1, 0.36, 1),
+        transitionBuilder: (child, anim) => FadeTransition(
+          opacity: anim,
+          child: SlideTransition(
+            position: Tween(begin: const Offset(0, 0.03), end: Offset.zero).animate(anim),
+            child: child,
+          ),
+        ),
+        child: KeyedSubtree(
+          key: ValueKey(c.screen),
+          child: switch (c.screen) {
+            FlowScreen.lift => _LiftScreen(c: c),
+            FlowScreen.review => _ReviewScreen(c: c),
+            FlowScreen.done => _DoneScreen(c: c),
+          },
+        ),
+      ),
     );
   }
 }
@@ -667,7 +681,7 @@ class _BottomBar extends StatelessWidget {
               children: [
                 _PrimaryBtn(
                   label: 'Log set ${c.sets.length + 1}',
-                  onTap: () => c.logSet(true),
+                  onTap: () => c.logSet(),
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -773,15 +787,45 @@ class _RestBar extends StatelessWidget {
 }
 
 // ── review ──────────────────────────────────────────────────────────────────
-class _ReviewScreen extends StatelessWidget {
+class _ReviewScreen extends StatefulWidget {
   final SessionController c;
   const _ReviewScreen({required this.c});
   @override
+  State<_ReviewScreen> createState() => _ReviewScreenState();
+}
+
+class _ReviewScreenState extends State<_ReviewScreen> {
+  int? _expanded;
+  // Tapped "Adjust" this visit — ticks immediately, independent of Save.
+  final Set<int> _touched = {};
+  bool _finishing = false;
+
+  SessionController get c => widget.c;
+
+  void _toggleExpand(int i) {
+    setState(() {
+      if (_expanded == i) {
+        _expanded = null;
+      } else {
+        _expanded = i;
+        _touched.add(i); // opening it is enough to mark it handled
+      }
+    });
+  }
+
+  Future<void> _save(int i, List<(double?, int)> rows) async {
+    await c.saveDeferredLift(i, rows);
+    if (!mounted) return;
+    setState(() => _expanded = null);
+  }
+
+  Future<void> _finish() async {
+    setState(() => _finishing = true);
+    await c.finishReview();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final deferred = [
-      for (var i = 0; i < c.exercises.length; i++)
-        if (c.exerciseDeferred(i)) i
-    ];
     return SafeArea(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -795,7 +839,7 @@ class _ReviewScreen extends StatelessWidget {
                     style: TextStyle(
                         fontFamily: AppTheme.fontFamily, fontSize: 10, letterSpacing: 0.8, color: AppColors.accent)),
                 const SizedBox(height: 7),
-                Text('The bits you saved for later', style: Theme.of(context).textTheme.titleLarge),
+                Text('Here is the whole session', style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 8),
                 const Text('Prefilled at the plan. Open the ones that went differently — the rest you can leave as they are.',
                     style: TextStyle(
@@ -807,45 +851,17 @@ class _ReviewScreen extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
               children: [
-                for (final i in deferred)
+                for (var i = 0; i < c.exercises.length; i++)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
-                    child: V2Card(
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 24,
-                            height: 24,
-                            alignment: Alignment.center,
-                            decoration: const BoxDecoration(color: AppColors.surfaceSunken, shape: BoxShape.circle),
-                            child: const Icon(Icons.schedule_rounded, size: 15, color: AppColors.textMuted),
-                          ),
-                          const SizedBox(width: 11),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(c.exercises[i].name,
-                                    style: const TextStyle(
-                                        fontFamily: AppTheme.fontFamily,
-                                        fontWeight: FontWeight.w500,
-                                        fontSize: 13,
-                                        color: AppColors.textPrimary)),
-                                const SizedBox(height: 2),
-                                Text('Prefilled ${c.exercises[i].prescription} at the plan',
-                                    style: const TextStyle(
-                                        fontFamily: AppTheme.fontFamily,
-                                        fontSize: 10.5,
-                                        height: 1.4,
-                                        color: AppColors.textMuted)),
-                              ],
-                            ),
-                          ),
-                          const Text('Keep as is',
-                              style: TextStyle(
-                                  fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.accent)),
-                        ],
-                      ),
+                    child: _ReviewRow(
+                      c: c,
+                      index: i,
+                      expanded: _expanded == i,
+                      ticked: !c.exerciseDeferred(i) || c.exerciseConfirmed(i) || _touched.contains(i),
+                      entryDelay: i,
+                      onTapAdjust: c.exerciseDeferred(i) ? () => _toggleExpand(i) : null,
+                      onSave: (rows) => _save(i, rows),
                     ),
                   ),
               ],
@@ -860,11 +876,220 @@ class _ReviewScreen extends StatelessWidget {
                     style: TextStyle(
                         fontFamily: AppTheme.fontFamily, fontSize: 10.5, height: 1.5, color: AppColors.textDim)),
                 const SizedBox(height: 10),
-                _PrimaryBtn(label: 'Save and finish', onTap: c.finishReview),
+                _PrimaryBtn(
+                  label: _finishing ? 'Saving…' : 'Save and finish',
+                  onTap: _finishing ? () {} : _finish,
+                ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// One exercise row in the review list. Live/bulk lifts and already-confirmed
+/// deferred lifts render flat with a tick; untouched deferred lifts get an
+/// "Adjust" affordance that expands into an inline set editor.
+class _ReviewRow extends StatefulWidget {
+  final SessionController c;
+  final int index;
+  final bool expanded;
+  final bool ticked;
+  final int entryDelay;
+  final VoidCallback? onTapAdjust;
+  final void Function(List<(double?, int)> rows) onSave;
+  const _ReviewRow({
+    required this.c,
+    required this.index,
+    required this.expanded,
+    required this.ticked,
+    required this.entryDelay,
+    required this.onTapAdjust,
+    required this.onSave,
+  });
+
+  @override
+  State<_ReviewRow> createState() => _ReviewRowState();
+}
+
+class _ReviewRowState extends State<_ReviewRow> {
+  late List<SetRow> _rows;
+
+  @override
+  void initState() {
+    super.initState();
+    _seed();
+  }
+
+  @override
+  void didUpdateWidget(_ReviewRow old) {
+    super.didUpdateWidget(old);
+    if (old.expanded == false && widget.expanded == true) _seed();
+  }
+
+  void _seed() {
+    final c = widget.c;
+    final e = c.exercises[widget.index];
+    final n = c.target(widget.index);
+    _rows = List.generate(
+        n, (_) => SetRow(e.isBodyweight ? null : c.planKg(widget.index), e.prefillReps));
+  }
+
+  void _adjustWeight(int i, double d) {
+    setState(() => _rows[i].kg = ((_rows[i].kg ?? 0) + d).clamp(0, 500));
+  }
+
+  void _adjustReps(int i, int d) {
+    setState(() => _rows[i].reps = (_rows[i].reps + d).clamp(0, 100));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.c;
+    final e = c.exercises[widget.index];
+    final deferred = c.exerciseDeferred(widget.index);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: const Cubic(0.22, 1, 0.36, 1),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border.all(
+            color: widget.expanded ? AppColors.accent.withValues(alpha: 0.4) : AppColors.border),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onTapAdjust,
+            child: Padding(
+              padding: const EdgeInsets.all(13),
+              child: Row(
+                children: [
+                  _TickBadge(ticked: widget.ticked, delayMs: 60 * widget.entryDelay),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(e.name,
+                            style: const TextStyle(
+                                fontFamily: AppTheme.fontFamily,
+                                fontWeight: FontWeight.w500,
+                                fontSize: 13,
+                                color: AppColors.textPrimary)),
+                        const SizedBox(height: 2),
+                        Text(
+                            deferred
+                                ? 'Prefilled ${e.prescription} at the plan'
+                                : 'Logged during the session',
+                            style: const TextStyle(
+                                fontFamily: AppTheme.fontFamily,
+                                fontSize: 10.5,
+                                height: 1.4,
+                                color: AppColors.textMuted)),
+                      ],
+                    ),
+                  ),
+                  if (deferred)
+                    Text(widget.expanded ? 'Close' : (widget.ticked ? 'Adjust' : 'Keep as is'),
+                        style: const TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w500,
+                            fontSize: 10.5,
+                            color: AppColors.accent)),
+                ],
+              ),
+            ),
+          ),
+          if (deferred && widget.expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(13, 0, 13, 13),
+              child: Column(
+                children: [
+                  const Divider(color: AppColors.border, height: 1),
+                  const SizedBox(height: 11),
+                  for (var i = 0; i < _rows.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 26,
+                            child: Text('${i + 1}',
+                                style: const TextStyle(
+                                    fontFamily: AppTheme.fontFamily,
+                                    fontSize: 11,
+                                    color: AppColors.textFaint)),
+                          ),
+                          if (!e.isBodyweight) ...[
+                            Expanded(
+                              child: _Stepper(
+                                value: '${_n(_rows[i].kg ?? 0)} kg',
+                                onDown: () => _adjustWeight(i, -e.step),
+                                onUp: () => _adjustWeight(i, e.step),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          Expanded(
+                            child: _Stepper(
+                              value: '${_rows[i].reps} reps',
+                              onDown: () => _adjustReps(i, -1),
+                              onUp: () => _adjustReps(i, 1),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 4),
+                  SizedBox(
+                    width: double.infinity,
+                    child: _PrimaryBtn(
+                      label: 'Save this lift',
+                      onTap: () =>
+                          widget.onSave(_rows.map((r) => (r.kg, r.reps)).toList()),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  static String _n(double v) =>
+      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
+}
+
+/// The leading badge: a clock that pops into a lime check the instant this
+/// row counts as "handled" (touched, confirmed, or never deferred at all).
+class _TickBadge extends StatelessWidget {
+  final bool ticked;
+  final int delayMs;
+  const _TickBadge({required this.ticked, required this.delayMs});
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      key: ValueKey(ticked),
+      tween: Tween(begin: ticked ? 0.4 : 1, end: 1),
+      duration: Duration(milliseconds: 260 + delayMs),
+      curve: Curves.easeOutBack,
+      builder: (context, scale, child) => Transform.scale(scale: scale, child: child),
+      child: Container(
+        width: 24,
+        height: 24,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: ticked ? AppColors.accent : AppColors.surfaceSunken,
+          shape: BoxShape.circle,
+        ),
+        child: Icon(ticked ? Icons.check_rounded : Icons.schedule_rounded,
+            size: 14, color: ticked ? AppColors.onAccent : AppColors.textMuted),
       ),
     );
   }

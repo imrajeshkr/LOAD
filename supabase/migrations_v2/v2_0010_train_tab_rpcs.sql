@@ -79,9 +79,19 @@ declare
   v_sched    record;
   v_session  record;
   v_items    jsonb;
+  v_prog_start date;
 begin
   select training_weekdays into v_weekdays
     from training_profiles where user_id = p_user_id and valid_to is null;
+
+  -- A fresh signup mid-week has no history before the account existed — days
+  -- before it started are "nothing scheduled yet", not missed. Anchored on
+  -- the account's own created_at, NOT the active program's starts_on: that
+  -- resets every time the plan is regenerated (Profile "Rewrite my week"),
+  -- which would wrongly re-hide weekdays that were already normal training
+  -- days before that regeneration.
+  select created_at::date into v_prog_start
+    from profiles where id = p_user_id;
 
   -- Today's slot, if any.
   select sw.id, sw.program_day_id, pd.label into v_sched
@@ -122,6 +132,16 @@ begin
            and ws.status = 'completed' and ss.is_completed and ss.kind = 'working'
          group by se.exercise_id, ws.performed_on
       ) r where rn = 1
+    ),
+    -- Sets already logged in *today's* session (in_progress or completed),
+    -- so a lift left mid-way shows real progress on the plan chip and the
+    -- card can offer "Continue" instead of "Start" the moment anything exists.
+    today_progress as (
+      select se.exercise_id, count(*) as done
+        from session_sets ss
+        join session_exercises se on se.id = ss.session_exercise_id
+       where se.session_id = v_session.id and ss.is_completed and ss.kind = 'working'
+       group by se.exercise_id
     )
     select jsonb_agg(jsonb_build_object(
       'exercise_id',  p.exercise_id,
@@ -134,9 +154,13 @@ begin
       'rest_seconds', p.rest_seconds,
       'demo_path',    p.demo_path,
       'weight_step',  resolved_weight_step(p_user_id, p.exercise_id),
-      'prefill_kg',   coalesce((prev.sets -> -1 -> 0)::numeric, p.target_weight_kg, 0),
+      -- `->>` (not `->`) so a bodyweight set's stored JSON null weight comes
+      -- back as a real SQL NULL that coalesce can fall through; casting a jsonb
+      -- null straight to numeric throws 22023 and takes the whole RPC down.
+      'prefill_kg',   coalesce((prev.sets -> -1 ->> 0)::numeric, p.target_weight_kg, 0),
       'prefill_reps', coalesce(p.rep_high, 10),
       'last_sets',    prev.sets,
+      'done_sets',    coalesce(tp.done, 0),
       'joints',       coalesce((select jsonb_agg(j.slug)
                                   from exercise_joints ej
                                   join joints j on j.id = ej.joint_id
@@ -146,7 +170,9 @@ begin
                                  where c.exercise_id = p.exercise_id), '[]'::jsonb)
     ) order by p.ordinal)
       into v_items
-      from plan p left join prev on prev.exercise_id = p.exercise_id;
+      from plan p
+      left join prev on prev.exercise_id = p.exercise_id
+      left join today_progress tp on tp.exercise_id = p.exercise_id;
   end if;
 
   return jsonb_build_object(
@@ -164,10 +190,17 @@ begin
       select jsonb_agg(jsonb_build_object(
         'date',    d::date,
         'dow',     extract(isodow from d)::int,
-        'planned', exists (select 1 from scheduled_workouts sw2
+        -- The real scheduled label, so the calendar can tag each day (PUSH /
+        -- PULL / LEGS) rather than just a plain/rest dot.
+        'label',   (select pd2.label from scheduled_workouts sw3
+                     join program_days pd2 on pd2.id = sw3.program_day_id
+                    where sw3.user_id = p_user_id and sw3.scheduled_for = d::date
+                    limit 1),
+        'planned', (exists (select 1 from scheduled_workouts sw2
                             where sw2.user_id = p_user_id
                               and sw2.scheduled_for = d::date)
-                   or extract(isodow from d)::int = any (coalesce(v_weekdays, '{}')),
+                   or extract(isodow from d)::int = any (coalesce(v_weekdays, '{}')))
+                   and d::date >= coalesce(v_prog_start, d::date),
         'trained', exists (select 1 from workout_sessions ws2
                             where ws2.user_id = p_user_id
                               and ws2.performed_on = d::date
@@ -177,13 +210,28 @@ begin
       from generate_series(v_week0, v_week0 + 6, interval '1 day') d
     ),
     -- Tomorrow and the one after — feeds both "Tomorrow" and the rest-day
-    -- "Then · Fri · Leg day" row.
+    -- "Then · Fri · Leg day" row. Each carries its own lifts + provisional
+    -- loads so the Tomorrow sheet needs no second round trip.
     'upcoming', (
       select coalesce(jsonb_agg(u order by (u->>'on')), '[]'::jsonb) from (
         select jsonb_build_object(
                  'on', sw.scheduled_for, 'label', pd.label,
                  'lift_count', (select count(*) from program_day_exercises pde
-                                 where pde.program_day_id = pd.id)) as u
+                                 where pde.program_day_id = pd.id),
+                 'exercises', (
+                   select coalesce(jsonb_agg(jsonb_build_object(
+                            'name',             e.name,
+                            'load_type',        e.load_type::text,
+                            'sets_target',      pde.sets_target,
+                            'rep_low',          pde.rep_low,
+                            'rep_high',         pde.rep_high,
+                            'target_weight_kg', pde.target_weight_kg
+                          ) order by pde.ordinal), '[]'::jsonb)
+                     from program_day_exercises pde
+                     join exercises e on e.id = pde.exercise_id
+                    where pde.program_day_id = pd.id
+                 )
+               ) as u
           from scheduled_workouts sw
           join program_days pd on pd.id = sw.program_day_id
          where sw.user_id = p_user_id and sw.status = 'pending'
@@ -246,22 +294,32 @@ begin
       ) x
     ),
     -- Per-exercise: volume bars ("where the work went") + set recap rows.
+    -- Every aggregate (sum/count/max/jsonb_agg) has to be computed in its own
+    -- subquery first: Postgres's "aggregate function calls cannot be nested"
+    -- fires the instant ANY aggregate call sits syntactically inside another
+    -- aggregate's argument list — including as a sibling passed through
+    -- jsonb_build_object, not just literal agg(agg(...)) — so the outer
+    -- jsonb_agg here may only ever reference plain columns, never call one.
     'exercises', (
       select coalesce(jsonb_agg(jsonb_build_object(
-               'name', e.name, 'load_type', e.load_type::text,
-               'ordinal', se.ordinal,
-               'volume_kg', coalesce(sum(ss.volume_kg), 0),
-               'total_reps', coalesce(sum(ss.reps), 0),
-               'set_count', count(ss.id),
-               'top_kg', max(ss.weight_kg),
-               'sets', jsonb_agg(jsonb_build_array(ss.weight_kg, ss.reps)
-                                 order by ss.set_number)
-             ) order by se.ordinal), '[]'::jsonb)
-        from session_exercises se
-        join exercises e on e.id = se.exercise_id
-        join session_sets ss on ss.session_exercise_id = se.id
-       where se.session_id = v_s.id and ss.is_completed and ss.kind = 'working'
-       group by se.id, e.id
+               'name', x.name, 'load_type', x.load_type, 'ordinal', x.ordinal,
+               'volume_kg', x.volume_kg, 'total_reps', x.total_reps,
+               'set_count', x.set_count, 'top_kg', x.top_kg, 'sets', x.sets
+             ) order by x.ordinal), '[]'::jsonb)
+      from (
+        select se.ordinal, e.name, e.load_type::text as load_type,
+               coalesce(sum(ss.volume_kg), 0) as volume_kg,
+               coalesce(sum(ss.reps), 0)      as total_reps,
+               count(ss.id)                    as set_count,
+               max(ss.weight_kg)               as top_kg,
+               jsonb_agg(jsonb_build_array(ss.weight_kg, ss.reps)
+                         order by ss.set_number) as sets
+          from session_exercises se
+          join exercises e on e.id = se.exercise_id
+          join session_sets ss on ss.session_exercise_id = se.id
+         where se.session_id = v_s.id and ss.is_completed and ss.kind = 'working'
+         group by se.id, e.id, se.ordinal, e.name, e.load_type
+      ) x
     ),
     -- Muscle chips: this session's working sets by display group.
     'muscles', (

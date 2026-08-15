@@ -18,6 +18,9 @@ class PlanExerciseV2 {
   final List<(double, int)> lastSets; // last completed session, for "last time"
   final List<String> cues;
   final List<String> joints;
+  /// Working sets already logged in today's session (any status) for this
+  /// lift — drives the plan chip's progress fill when a session is resumed.
+  final int doneSets;
 
   const PlanExerciseV2({
     required this.exerciseId,
@@ -35,12 +38,18 @@ class PlanExerciseV2 {
     required this.lastSets,
     required this.cues,
     required this.joints,
+    this.doneSets = 0,
   });
 
   bool get isBodyweight => loadType == 'bodyweight_reps';
 
   /// Step used by the ± chips: catalog/derived value, else 2.5, else n/a.
   double get step => weightStep ?? 2.5;
+
+  /// 0..1, clamped — how far into this lift today's session already is.
+  double get progress => setsTarget <= 0 ? 0 : (doneSets / setsTarget).clamp(0.0, 1.0);
+  bool get inProgress => doneSets > 0 && doneSets < setsTarget;
+  bool get isDone => setsTarget > 0 && doneSets >= setsTarget;
 
   String get prescription {
     final range = repLow == repHigh ? '$repLow' : '$repLow–$repHigh';
@@ -80,6 +89,7 @@ class PlanExerciseV2 {
           .toList(),
       cues: ((j['cues'] as List?) ?? const []).cast<String>(),
       joints: ((j['joints'] as List?) ?? const []).cast<String>(),
+      doneSets: (j['done_sets'] as num?)?.toInt() ?? 0,
     );
   }
 }
@@ -139,12 +149,17 @@ class WeekDayV2 {
   final bool planned;
   final bool trained;
   final bool isToday;
+  /// The scheduled day's label ("Push day"), null on rest days. Only present
+  /// once the `train_screen` RPC returns it — older deployments give null,
+  /// which the calendar just renders as an untagged day.
+  final String? label;
   const WeekDayV2({
     required this.date,
     required this.dow,
     required this.planned,
     required this.trained,
     required this.isToday,
+    this.label,
   });
   factory WeekDayV2.fromJson(Map<String, dynamic> j) => WeekDayV2(
         date: DateTime.parse(j['date'] as String),
@@ -152,6 +167,38 @@ class WeekDayV2 {
         planned: j['planned'] as bool? ?? false,
         trained: j['trained'] as bool? ?? false,
         isToday: j['is_today'] as bool? ?? false,
+        label: j['label'] as String?,
+      );
+}
+
+/// One lift in an upcoming day's preview sheet — provisional until logged.
+class UpcomingExerciseV2 {
+  final String name;
+  final String loadType;
+  final int setsTarget;
+  final int repLow;
+  final int repHigh;
+  final double? targetWeightKg;
+  const UpcomingExerciseV2({
+    required this.name,
+    required this.loadType,
+    required this.setsTarget,
+    required this.repLow,
+    required this.repHigh,
+    required this.targetWeightKg,
+  });
+  bool get isBodyweight => loadType == 'bodyweight_reps';
+  String get prescription {
+    final range = repLow == repHigh ? '$repLow' : '$repLow–$repHigh';
+    return '$setsTarget sets · $range reps';
+  }
+  factory UpcomingExerciseV2.fromJson(Map<String, dynamic> j) => UpcomingExerciseV2(
+        name: j['name'] as String? ?? 'Exercise',
+        loadType: j['load_type'] as String? ?? 'weight_reps',
+        setsTarget: (j['sets_target'] as num?)?.toInt() ?? 3,
+        repLow: (j['rep_low'] as num?)?.toInt() ?? 8,
+        repHigh: (j['rep_high'] as num?)?.toInt() ?? 12,
+        targetWeightKg: (j['target_weight_kg'] as num?)?.toDouble(),
       );
 }
 
@@ -159,11 +206,21 @@ class UpcomingV2 {
   final DateTime on;
   final String label;
   final int liftCount;
-  const UpcomingV2({required this.on, required this.label, required this.liftCount});
+  final List<UpcomingExerciseV2> exercises;
+  const UpcomingV2({
+    required this.on,
+    required this.label,
+    required this.liftCount,
+    this.exercises = const [],
+  });
   factory UpcomingV2.fromJson(Map<String, dynamic> j) => UpcomingV2(
         on: DateTime.parse(j['on'] as String),
         label: j['label'] as String? ?? 'Session',
         liftCount: (j['lift_count'] as num?)?.toInt() ?? 0,
+        exercises: ((j['exercises'] as List?) ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(UpcomingExerciseV2.fromJson)
+            .toList(),
       );
 }
 
@@ -177,10 +234,43 @@ enum EffortV2 {
   final String dbValue;
   final int rir;
   const EffortV2(this.dbValue, this.rir);
+
+  static EffortV2? fromDb(String? v) {
+    for (final e in EffortV2.values) {
+      if (e.dbValue == v) return e;
+    }
+    return null;
+  }
 }
 
 /// How a lift was entered (session_exercises.entry_mode).
 enum EntryModeV2 { live, bulk, deferred }
+
+extension EntryModeV2Parse on EntryModeV2 {
+  static EntryModeV2? fromDb(String? v) {
+    for (final e in EntryModeV2.values) {
+      if (e.name == v) return e;
+    }
+    return null;
+  }
+}
+
+/// One exercise's already-logged progress in an in-progress session, read
+/// back when resuming so "Continue session" doesn't start from a blank slate.
+class ResumedLiftV2 {
+  final int ordinal;
+  final EntryModeV2? entryMode;
+  final EffortV2? effort;
+  final bool unconfirmed;
+  final List<(double?, int)> sets; // working, completed sets, in order
+  const ResumedLiftV2({
+    required this.ordinal,
+    required this.entryMode,
+    required this.effort,
+    required this.unconfirmed,
+    required this.sets,
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // After-state: session_summary()
@@ -693,11 +783,19 @@ class PreferencesV2 {
 
 /// One "Working around" entry — `user_constraints` joined to `joints`.
 class ConstraintV2 {
+  final String id;
   final String label;
   final String? side; // left | right | bilateral | null
+  final String? jointId;
   final String? jointName;
 
-  const ConstraintV2({required this.label, this.side, this.jointName});
+  const ConstraintV2({
+    required this.id,
+    required this.label,
+    this.side,
+    this.jointId,
+    this.jointName,
+  });
 
   /// "Left shoulder" — side-prefixed joint, falling back to the free-text label.
   String get display {
@@ -715,8 +813,10 @@ class ConstraintV2 {
   factory ConstraintV2.fromJson(Map<String, dynamic> j) {
     final joint = (j['joints'] as Map?)?.cast<String, dynamic>();
     return ConstraintV2(
+      id: j['id'] as String,
       label: j['label'] as String? ?? '',
       side: j['side'] as String?,
+      jointId: j['joint_id'] as String?,
       jointName: joint?['name'] as String?,
     );
   }

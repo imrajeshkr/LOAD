@@ -59,6 +59,43 @@ extension SupabaseServiceV2 on SupabaseService {
     return id as String?;
   }
 
+  /// Everything already logged in a session, keyed by exercise ordinal — so
+  /// "Continue session" can rehydrate the in-memory flow instead of starting
+  /// blank at lift one every time.
+  Future<Map<int, ResumedLiftV2>> fetchResumeState(String sessionId) async {
+    final uid = currentUser?.id;
+    if (uid == null) return {};
+    final rows = await client
+        .from('session_exercises')
+        .select('ordinal, entry_mode, effort, is_unconfirmed, '
+            'session_sets(weight_kg, reps, set_number, kind, is_completed)')
+        .eq('session_id', sessionId)
+        .eq('user_id', uid);
+
+    final out = <int, ResumedLiftV2>{};
+    for (final row in (rows as List).cast<Map<String, dynamic>>()) {
+      final ordinal = (row['ordinal'] as num?)?.toInt();
+      if (ordinal == null) continue;
+      final rawSets = (row['session_sets'] as List?) ?? const [];
+      final sets = rawSets
+          .cast<Map<String, dynamic>>()
+          .where((s) => s['kind'] == 'working' && s['is_completed'] == true)
+          .toList()
+        ..sort((a, b) =>
+            ((a['set_number'] as num?) ?? 0).compareTo((b['set_number'] as num?) ?? 0));
+      out[ordinal] = ResumedLiftV2(
+        ordinal: ordinal,
+        entryMode: EntryModeV2Parse.fromDb(row['entry_mode'] as String?),
+        effort: EffortV2.fromDb(row['effort'] as String?),
+        unconfirmed: row['is_unconfirmed'] as bool? ?? false,
+        sets: sets
+            .map((s) => ((s['weight_kg'] as num?)?.toDouble(), (s['reps'] as num?)?.toInt() ?? 0))
+            .toList(),
+      );
+    }
+    return out;
+  }
+
   /// Look up (or create) the session_exercises row for one lift in a session,
   /// keyed by ordinal — the schema's unique key is (session_id, ordinal), so a
   /// mid-session swap repoints exercise_id rather than colliding.
@@ -291,7 +328,7 @@ extension SupabaseServiceV2 on SupabaseService {
     if (uid == null) return const [];
     final rows = await client.rpc('lift_status', params: {
       'p_user_id': uid,
-      'p_since': ?since == null ? null : _dateStr(since),
+      'p_since': since == null ? null : _dateStr(since),
     });
     if (rows is! List) return const [];
     return rows.cast<Map<String, dynamic>>().map(LiftStatusV2.fromJson).toList();
@@ -303,7 +340,7 @@ extension SupabaseServiceV2 on SupabaseService {
     if (uid == null) return const [];
     final rows = await client.rpc('effort_histogram', params: {
       'p_user_id': uid,
-      'p_since': ?since == null ? null : _dateStr(since),
+      'p_since': since == null ? null : _dateStr(since),
     });
     if (rows is! List) return const [];
     return rows
@@ -331,7 +368,7 @@ extension SupabaseServiceV2 on SupabaseService {
     if (uid == null) return const [];
     final rows = await client.rpc('consistency_weeks', params: {
       'p_user_id': uid,
-      'p_since': ?since == null ? null : _dateStr(since),
+      'p_since': since == null ? null : _dateStr(since),
     });
     if (rows is! List) return const [];
     return rows.cast<Map<String, dynamic>>().map(ConsistencyWeekV2.fromJson).toList();
@@ -342,7 +379,7 @@ extension SupabaseServiceV2 on SupabaseService {
     if (uid == null) return null;
     final json = await client.rpc('progress_photo_pair', params: {
       'p_user_id': uid,
-      'p_since': ?since == null ? null : _dateStr(since),
+      'p_since': since == null ? null : _dateStr(since),
     });
     if (json is! Map) return null;
     return PhotoPairV2.fromJson(json.cast<String, dynamic>());
@@ -474,7 +511,7 @@ extension SupabaseServiceV2 on SupabaseService {
           .maybeSingle(),
       client
           .from('user_constraints')
-          .select('label, side, joints(name)')
+          .select('id, label, side, joint_id, joints(name)')
           .eq('user_id', uid)
           .isFilter('active_to', null),
       client.rpc('is_training_paused', params: {'p_user_id': uid}),
@@ -527,6 +564,33 @@ extension SupabaseServiceV2 on SupabaseService {
     await client.from('user_preferences').update(patch).eq('user_id', uid);
   }
 
+  /// Just the effort-prompt frequency — read once when a session starts, so
+  /// the session flow doesn't have to load the whole Profile screen's worth
+  /// of data to honour one setting.
+  Future<String> fetchEffortPromptPref() async {
+    final uid = currentUser?.id;
+    if (uid == null) return 'first_set';
+    final row = await client
+        .from('user_preferences')
+        .select('effort_prompt')
+        .eq('user_id', uid)
+        .maybeSingle();
+    return row?['effort_prompt'] as String? ?? 'first_set';
+  }
+
+  /// Just the keep-screen-awake toggle — read once when a session starts,
+  /// same reasoning as [fetchEffortPromptPref].
+  Future<bool> fetchKeepScreenAwakePref() async {
+    final uid = currentUser?.id;
+    if (uid == null) return true;
+    final row = await client
+        .from('user_preferences')
+        .select('keep_screen_awake')
+        .eq('user_id', uid)
+        .maybeSingle();
+    return row?['keep_screen_awake'] as bool? ?? true;
+  }
+
   /// Instant plate-inventory write.
   Future<void> updatePlateSizes(List<double> sizes) async {
     final uid = currentUser?.id;
@@ -549,6 +613,36 @@ extension SupabaseServiceV2 on SupabaseService {
         .update(patch)
         .eq('user_id', uid)
         .isFilter('valid_to', null);
+  }
+
+  /// Flag a new "working around" area — a real joint+side, or a free-text
+  /// note when [jointId] is null. Written immediately (staged only on the
+  /// client, like the rest of Profile's plan edits), so it's already in place
+  /// by the time "Rewrite my week" regenerates the program.
+  Future<void> addConstraint({
+    String? jointId,
+    String? side,
+    required String label,
+  }) async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    await client.from('user_constraints').insert({
+      'user_id': uid,
+      'joint_id': ?jointId,
+      'side': ?side,
+      'label': label,
+      'severity': 'mild',
+      'active_from': _todayStr(),
+    });
+  }
+
+  /// Soft-close a constraint — the schema's own point-in-time model, same
+  /// pattern reads already filter on (`active_to IS NULL`).
+  Future<void> removeConstraint(String constraintId) async {
+    await client
+        .from('user_constraints')
+        .update({'active_to': _todayStr()})
+        .eq('id', constraintId);
   }
 
   /// Open a pause (Ill / travelling / hurt). At most one open pause exists —
@@ -626,6 +720,14 @@ extension SupabaseServiceV2 on SupabaseService {
       'weight_kg': d.bodyweightKg,
       'source': 'manual',
     }, onConflict: 'user_id,measured_on');
+
+    // 2b. Protein target — 1.8 g/kg, the constant used everywhere else this
+    // is shown. Without this row the Body & Fuel card has nothing to bar
+    // against and silently renders as bare numbers with no visual.
+    await client.from('nutrition_targets').insert({
+      'user_id': uid,
+      'protein_g': (d.bodyweightKg * 1.8).round(),
+    });
 
     // 3. Units preference (row already exists from the signup trigger).
     await client
@@ -822,20 +924,24 @@ extension SupabaseServiceV2 on SupabaseService {
     };
     await _insertCoachNote(
       threadId: threadId,
-      content: "Welcome in. I've built your first week — $splitLabel across "
-          "${d.weekdaysIso.length} days — from what you just told me. I move "
-          "loads off your effort answers, never a calendar, so everything "
-          "starts a little light and climbs when you're ready. Ask me anything.",
+      content: "Hey — good to have you. I'm your trainer, and unlike a generic "
+          "plan, I actually read your history before I say anything to you. "
+          "You'll find me right here whenever you want to talk — tap the chat "
+          "icon below, any time. Fair warning: I check in on you whether you "
+          "ask or not. That's the job — I'm not letting you drift.",
       category: 'reply',
     );
     await _insertCoachNote(
       threadId: threadId,
       category: 'morning_note',
       pinnedToday: true,
-      content: 'Day one starts a touch light on purpose. End every set with '
-          'about two reps still in you — that honest signal is what I use to '
-          'load the next session.'
-          '${d.flags.isNotEmpty ? " I'll route around what you flagged and warn you when a lift gets close." : ''}',
+      content: "I've built your first week — $splitLabel across "
+          "${d.weekdaysIso.length} days — from what you just told me. "
+          'Day one starts a touch light on purpose: end every set with about '
+          'two reps still in you — that honest signal is what I use to load '
+          'the next session, never a calendar.'
+          '${d.flags.isNotEmpty ? " I'll route around what you flagged and warn you when a lift gets close." : ''}'
+          ' Got a question before you start? I\'m on the Trainer tab.',
       receipts: [
         ('auto_awesome', 'Plan just built'),
         ('flag', d.leadGoal.label),
