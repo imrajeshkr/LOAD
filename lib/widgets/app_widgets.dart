@@ -2,6 +2,68 @@ import 'package:flutter/material.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_theme.dart';
 
+/// The 16:10 exercise demo slot — a real image/animated-WebP from Supabase
+/// Storage when [url] resolves, else the same placeholder the app has always
+/// shown. One widget so the Guide screen and the in-session flow can't drift.
+class ExerciseDemoMedia extends StatelessWidget {
+  final String? url;
+  const ExerciseDemoMedia({super.key, this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return AspectRatio(
+      aspectRatio: 16 / 10,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(AppRadii.card),
+        child: Container(
+          color: AppColors.chipFill,
+          child: url == null
+              ? const _DemoPlaceholder()
+              : Image.network(
+                  url!,
+                  fit: BoxFit.cover,
+                  loadingBuilder: (context, child, progress) {
+                    if (progress == null) return child;
+                    return const Center(
+                      child: SizedBox(
+                        height: 22,
+                        width: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  },
+                  errorBuilder: (context, error, stack) => const _DemoPlaceholder(),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DemoPlaceholder extends StatelessWidget {
+  const _DemoPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.play_circle_outline_rounded, size: 40, color: AppColors.accent),
+        SizedBox(height: 10),
+        Text(
+          'Demo clip coming soon',
+          style: TextStyle(
+            fontFamily: AppTheme.fontFamily,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+            color: AppColors.accent,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// White rounded card — the workhorse container from the design guide.
 class AppCard extends StatelessWidget {
   final Widget child;

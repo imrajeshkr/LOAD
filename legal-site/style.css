@@ -1,0 +1,134 @@
+:root {
+  --bg: #FCF3EE;
+  --surface: #FFFFFF;
+  --accent: #B94642;
+  --text-primary: #2D211E;
+  --text-body: #322523;
+  --text-secondary: #7C6E69;
+  --divider: #F4E4DD;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-body);
+  font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.6;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+}
+
+header.site {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.mark {
+  font-weight: 900;
+  font-size: 22px;
+  letter-spacing: 0.03em;
+  color: var(--text-primary);
+}
+
+.mark .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 3px;
+}
+
+nav.crumbs {
+  margin-bottom: 36px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+nav.crumbs a { color: var(--accent); text-decoration: none; }
+nav.crumbs a:hover { text-decoration: underline; }
+
+h1 {
+  font-size: 30px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 0 0 6px;
+}
+
+.updated {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 36px;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 34px 0 10px;
+}
+
+h3 {
+  font-size: 14.5px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 20px 0 8px;
+}
+
+p, li { font-size: 14.5px; color: var(--text-body); }
+ul, ol { padding-left: 22px; }
+li { margin-bottom: 6px; }
+
+strong { color: var(--text-primary); }
+
+a { color: var(--accent); }
+
+.callout {
+  background: var(--surface);
+  border-radius: 16px;
+  padding: 16px 18px;
+  margin: 18px 0;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+
+.callout strong { color: var(--text-primary); }
+
+hr {
+  border: none;
+  border-top: 1px solid var(--divider);
+  margin: 40px 0;
+}
+
+footer.site {
+  margin-top: 48px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.card-links {
+  display: flex;
+  gap: 12px;
+  margin-top: 28px;
+  flex-wrap: wrap;
+}
+
+.card-links a {
+  display: inline-block;
+  padding: 13px 20px;
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--text-primary);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 13.5px;
+}

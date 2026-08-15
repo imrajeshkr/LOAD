@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
@@ -70,9 +71,13 @@ class _AuthScreenState extends State<AuthScreen> {
     setState(() => _error = null);
     try {
       await SupabaseService.instance.signInWithGoogle();
-    } catch (_) {
-      setState(() => _error =
-          "Google sign-in isn't enabled yet — turn it on in your Supabase auth providers.");
+    } catch (e) {
+      // Dismissing the account picker isn't an error worth showing.
+      if (e is GoogleSignInException &&
+          e.code == GoogleSignInExceptionCode.canceled) {
+        return;
+      }
+      setState(() => _error = "Couldn't sign in with Google — please try again.");
     }
   }
 

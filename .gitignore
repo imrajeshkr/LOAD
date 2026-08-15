@@ -3,6 +3,11 @@
 .env.*
 !.env.example
 
+# Android release signing — never commit
+android/key.properties
+*.jks
+*.keystore
+
 # Miscellaneous
 *.class
 *.log

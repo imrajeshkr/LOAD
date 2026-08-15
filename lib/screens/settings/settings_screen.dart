@@ -33,12 +33,22 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   TextEditingController? _injuriesCtrl;
   TextEditingController? _targetCtrl;
+  final _weighInCtrl = TextEditingController();
 
   @override
   void dispose() {
     _injuriesCtrl?.dispose();
     _targetCtrl?.dispose();
+    _weighInCtrl.dispose();
     super.dispose();
+  }
+
+  void _logWeighIn(AppState state) {
+    final shown = double.tryParse(_weighInCtrl.text.trim());
+    if (shown == null || shown <= 0) return;
+    state.logWeight(state.units.toKg(shown));
+    _weighInCtrl.clear();
+    FocusScope.of(context).unfocus();
   }
 
   Future<void> _save(AppState state) async {
@@ -100,6 +110,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
       padding: const EdgeInsets.only(bottom: 32),
       children: [
         const ScreenHeader(title: 'Profile', eyebrow: 'Your coaching setup'),
+
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+          child: AppCard(
+            padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 15),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Log a weigh-in',
+                  style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                    color: AppColors.textMuted,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  state.weightLog.isEmpty
+                      ? "You haven't logged one yet."
+                      : 'Last: ${units.formatWeightWithUnit(state.weightLog.last.weightKg, decimals: 1)}',
+                  style: const TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 11.5,
+                    height: 1.5,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _weighInCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        textInputAction: TextInputAction.done,
+                        onSubmitted: (_) => _logWeighIn(state),
+                        style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          color: AppColors.textBody,
+                        ),
+                        decoration: InputDecoration(hintText: units.weightLabel),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => _logWeighIn(state),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13.5),
+                        decoration: BoxDecoration(
+                          color: AppColors.accent,
+                          borderRadius: BorderRadius.circular(AppRadii.smallButton),
+                        ),
+                        child: const Text(
+                          'Log',
+                          style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12,
+                            color: AppColors.onAccent,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
 
         _Group(
           title: 'Units',

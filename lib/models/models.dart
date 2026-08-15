@@ -87,23 +87,33 @@ class Profile {
     Map<String, dynamic>? training,
     double? currentWeightKg,
     String injuries = '',
-  }) =>
-      Profile(
-        goal: _Enum.label(_Enum.goal, training?['goal'] as String?),
-        experience: _Enum.label(_Enum.experience, training?['experience'] as String?),
-        daysPerWeek: (training?['days_per_week'] as int?) ?? 4,
-        environment: _Enum.label(_Enum.environment, training?['environment'] as String?),
-        splitPref: _Enum.label(_Enum.split, training?['split_preference'] as String?),
-        injuries: injuries,
-        currentWeightKg: currentWeightKg,
-        targetWeightKg: (training?['target_weight_kg'] as num?)?.toDouble(),
-        units: UnitSystem.fromId(preferences?['units'] as String?),
-      );
+  }) => Profile(
+    goal: _Enum.label(_Enum.goal, training?['goal'] as String?),
+    experience: _Enum.label(
+      _Enum.experience,
+      training?['experience'] as String?,
+    ),
+    daysPerWeek: (training?['days_per_week'] as int?) ?? 4,
+    environment: _Enum.label(
+      _Enum.environment,
+      training?['environment'] as String?,
+    ),
+    splitPref: _Enum.label(
+      _Enum.split,
+      training?['split_preference'] as String?,
+    ),
+    injuries: injuries,
+    currentWeightKg: currentWeightKg,
+    targetWeightKg: (training?['target_weight_kg'] as num?)?.toDouble(),
+    units: UnitSystem.fromId(preferences?['units'] as String?),
+  );
 
   // ── enum values for the write side ───────────────────────────────────
   String? get goalValue => goal == null ? null : _Enum.goal[goal];
-  String? get experienceValue => experience == null ? null : _Enum.experience[experience];
-  String? get environmentValue => environment == null ? null : _Enum.environment[environment];
+  String? get experienceValue =>
+      experience == null ? null : _Enum.experience[experience];
+  String? get environmentValue =>
+      environment == null ? null : _Enum.environment[environment];
   String get splitPrefValue =>
       (splitPref == null ? null : _Enum.split[splitPref]) ?? 'no_preference';
 
@@ -123,7 +133,10 @@ class Profile {
   }
 
   bool get isComplete =>
-      goal != null && experience != null && environment != null && splitPref != null;
+      goal != null &&
+      experience != null &&
+      environment != null &&
+      splitPref != null;
 
   /// Daily protein target in grams — 1.8 g per kg of bodyweight, a common
   /// recommendation for people training for muscle. Falls back to a flat
@@ -137,6 +150,9 @@ class Profile {
 
 /// How far through an exercise's prescription the lifter is today.
 enum SetProgress { none, partial, complete }
+
+/// How a completed-session breakdown row compares to last time.
+enum DeltaTone { positive, neutral, warning }
 
 /// A block of actual work on one exercise — used for both what was done last
 /// time (`last`) and what has been logged today (`today`).
@@ -171,10 +187,12 @@ class ExerciseEffort {
     final sets = <LoggedSet>[];
     for (final pair in raw) {
       if (pair is! List || pair.length < 2) continue;
-      sets.add(LoggedSet(
-        weightKg: (pair[0] as num?)?.toDouble() ?? 0,
-        reps: (pair[1] as num?)?.toInt() ?? 0,
-      ));
+      sets.add(
+        LoggedSet(
+          weightKg: (pair[0] as num?)?.toDouble() ?? 0,
+          reps: (pair[1] as num?)?.toInt() ?? 0,
+        ),
+      );
     }
     if (sets.isEmpty) return null;
 
@@ -182,7 +200,8 @@ class ExerciseEffort {
     return ExerciseEffort(
       sets: sets,
       volumeKg: (json['volume_kg'] as num?)?.toDouble() ?? 0,
-      totalReps: (json['total_reps'] as num?)?.toInt() ??
+      totalReps:
+          (json['total_reps'] as num?)?.toInt() ??
           sets.fold(0, (n, s) => n + s.reps),
       date: date == null ? null : DateTime.parse(date),
     );
@@ -227,6 +246,10 @@ class ExerciseSpec {
   /// What has been logged today — through any path, including chat.
   final ExerciseEffort? today;
 
+  /// Object path within the public `exercise-media` bucket, e.g.
+  /// "exercise-guide-web/bench-press.webp". Null means no demo asset yet.
+  final String? demoPath;
+
   const ExerciseSpec({
     required this.id,
     required this.name,
@@ -243,10 +266,11 @@ class ExerciseSpec {
     this.cues = const [],
     this.last,
     this.today,
-  })  : repLow = repLow ?? reps,
-        repHigh = repHigh ?? reps,
-        prefillKg = prefillKg ?? weightKg,
-        prefillReps = prefillReps ?? reps;
+    this.demoPath,
+  }) : repLow = repLow ?? reps,
+       repHigh = repHigh ?? reps,
+       prefillKg = prefillKg ?? weightKg,
+       prefillReps = prefillReps ?? reps;
 
   ExerciseSpec copyWith({
     int? setsTarget,
@@ -254,24 +278,24 @@ class ExerciseSpec {
     double? weightKg,
     ExerciseEffort? last,
     ExerciseEffort? today,
-  }) =>
-      ExerciseSpec(
-        id: id,
-        name: name,
-        setsTarget: setsTarget ?? this.setsTarget,
-        reps: reps ?? this.reps,
-        weightKg: weightKg ?? this.weightKg,
-        loadType: loadType,
-        repLow: repLow,
-        repHigh: repHigh,
-        restSeconds: restSeconds,
-        prefillKg: prefillKg,
-        prefillReps: prefillReps,
-        joints: joints,
-        cues: cues,
-        last: last ?? this.last,
-        today: today ?? this.today,
-      );
+  }) => ExerciseSpec(
+    id: id,
+    name: name,
+    setsTarget: setsTarget ?? this.setsTarget,
+    reps: reps ?? this.reps,
+    weightKg: weightKg ?? this.weightKg,
+    loadType: loadType,
+    repLow: repLow,
+    repHigh: repHigh,
+    restSeconds: restSeconds,
+    prefillKg: prefillKg,
+    prefillReps: prefillReps,
+    joints: joints,
+    cues: cues,
+    last: last ?? this.last,
+    today: today ?? this.today,
+    demoPath: demoPath,
+  );
 
   /// One item from `today_plan(uuid)`'s `exercises` array.
   factory ExerciseSpec.fromJson(Map<String, dynamic> json) {
@@ -296,6 +320,7 @@ class ExerciseSpec {
       cues: ((json['cues'] as List?) ?? const []).cast<String>(),
       last: ExerciseEffort.fromJson(json['last'] as Map<String, dynamic>?),
       today: ExerciseEffort.fromJson(json['today'] as Map<String, dynamic>?),
+      demoPath: json['demo_path'] as String?,
     );
   }
 
@@ -354,11 +379,8 @@ class WeightEntry {
 
   final DateTime loggedAt;
 
-  WeightEntry({
-    required this.weightKg,
-    required this.loggedAt,
-    double? avgKg,
-  }) : avgKg = avgKg ?? weightKg;
+  WeightEntry({required this.weightKg, required this.loggedAt, double? avgKg})
+    : avgKg = avgKg ?? weightKg;
 }
 
 class ProteinEntry {
@@ -464,7 +486,9 @@ class SessionTotals {
           ? null
           : DateTime.parse(json['started_at'] as String),
       elapsedMin: (json['elapsed_min'] as num?)?.toInt(),
-      date: json['date'] == null ? null : DateTime.parse(json['date'] as String),
+      date: json['date'] == null
+          ? null
+          : DateTime.parse(json['date'] as String),
     );
   }
 }
@@ -486,6 +510,13 @@ class TodayPlan {
   final SessionTotals? sessionNow;
   final SessionTotals? sessionLast;
 
+  /// When the in-progress session actually started, server-stamped —
+  /// available even before the first set is logged, unlike [sessionNow],
+  /// which is null until there's at least one set to aggregate. This is what
+  /// makes the in-flow elapsed timer resume-safe: it reads a fact the server
+  /// recorded once, not a client-side clock that resets on every reload.
+  final DateTime? sessionStartedAt;
+
   const TodayPlan({
     required this.hasPlan,
     this.localDate,
@@ -496,10 +527,12 @@ class TodayPlan {
     this.exercises = const [],
     this.sessionNow,
     this.sessionLast,
+    this.sessionStartedAt,
   });
 
   factory TodayPlan.fromJson(Map<String, dynamic> json) {
     final rawExercises = (json['exercises'] as List?) ?? const [];
+    final rawNow = json['session_now'] as Map<String, dynamic>?;
     return TodayPlan(
       hasPlan: json['has_plan'] as bool? ?? false,
       localDate: json['local_date'] == null
@@ -513,8 +546,13 @@ class TodayPlan {
           .cast<Map<String, dynamic>>()
           .map(ExerciseSpec.fromJson)
           .toList(),
-      sessionNow: SessionTotals.fromJson(json['session_now'] as Map<String, dynamic>?),
-      sessionLast: SessionTotals.fromJson(json['session_last'] as Map<String, dynamic>?),
+      sessionNow: SessionTotals.fromJson(rawNow),
+      sessionLast: SessionTotals.fromJson(
+        json['session_last'] as Map<String, dynamic>?,
+      ),
+      sessionStartedAt: rawNow?['started_at'] == null
+          ? null
+          : DateTime.parse(rawNow!['started_at'] as String),
     );
   }
 
@@ -541,11 +579,46 @@ class ProteinTarget {
   );
 
   factory ProteinTarget.fromRow(Map<String, dynamic> row) => ProteinTarget(
-        grams: (row['grams'] as num?)?.toInt() ?? 120,
-        basisKg: (row['basis_kg'] as num?)?.toDouble(),
-        perKg: (row['per_kg'] as num?)?.toDouble(),
-        rationale: (row['rationale'] as String?) ?? '',
-      );
+    grams: (row['grams'] as num?)?.toInt() ?? 120,
+    basisKg: (row['basis_kg'] as num?)?.toDouble(),
+    perKg: (row['per_kg'] as num?)?.toDouble(),
+    rationale: (row['rationale'] as String?) ?? '',
+  );
+}
+
+/// The next scheduled day after today, for the "Up next" card shown once
+/// today's session is complete — from `next_session_preview(uuid)`.
+class NextSessionPreview {
+  final bool hasNext;
+  final String? label;
+  final DateTime? scheduledFor;
+  final List<ExerciseSpec> exercises;
+
+  const NextSessionPreview({
+    required this.hasNext,
+    this.label,
+    this.scheduledFor,
+    this.exercises = const [],
+  });
+
+  static const none = NextSessionPreview(hasNext: false);
+
+  factory NextSessionPreview.fromJson(Map<String, dynamic> json) {
+    final rawExercises = (json['exercises'] as List?) ?? const [];
+    return NextSessionPreview(
+      hasNext: json['has_next'] as bool? ?? false,
+      label: json['label'] as String?,
+      scheduledFor: json['scheduled_for'] == null
+          ? null
+          : DateTime.parse(json['scheduled_for'] as String),
+      exercises: rawExercises
+          .cast<Map<String, dynamic>>()
+          .map(ExerciseSpec.fromJson)
+          .toList(),
+    );
+  }
+
+  int get totalSets => exercises.fold(0, (sum, e) => sum + e.setsTarget);
 }
 
 /// Fallback shown when a catalog exercise has no `exercise_cues` rows.

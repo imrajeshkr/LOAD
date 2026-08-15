@@ -1,3 +1,4 @@
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/models.dart';
 
@@ -22,6 +23,15 @@ class SupabaseService {
   /// back to its prescription.
   String? _programDayId;
 
+  /// Public CDN URL for an exercise demo asset. [path] is the object path
+  /// `today_plan()` returns on `demo_path` (e.g.
+  /// "exercise-guide-web/bench-press.webp"); null in, null out, so callers can
+  /// pass `exercise.demoPath` straight through and fall back on null.
+  String? demoUrl(String? path) {
+    if (path == null || path.isEmpty) return null;
+    return client.storage.from('exercise-media').getPublicUrl(path);
+  }
+
   /// exercise name -> exercise id, for the exercises the user has logged.
   /// Lets the progress screen keep selecting a trend by display name.
   final Map<String, String> _exerciseIdsByName = {};
@@ -41,11 +51,43 @@ class SupabaseService {
     await client.auth.signInWithPassword(email: email, password: password);
   }
 
+  /// Native Google sign-in: the platform account picker returns an ID token,
+  /// which Supabase verifies and exchanges for a session — no browser hop.
+  /// Requires GoogleSignIn.instance.initialize() to have run in main() with
+  /// GOOGLE_WEB_CLIENT_ID (and GOOGLE_IOS_CLIENT_ID on iOS) set in .env.
   Future<void> signInWithGoogle() async {
-    await client.auth.signInWithOAuth(OAuthProvider.google);
+    final account = await GoogleSignIn.instance.authenticate();
+    final idToken = account.authentication.idToken;
+    if (idToken == null) {
+      throw StateError('Google did not return an ID token.');
+    }
+    await client.auth.signInWithIdToken(
+      provider: OAuthProvider.google,
+      idToken: idToken,
+    );
   }
 
   Future<void> signOut() async {
+    _programDayId = null;
+    _threadId = null;
+    _exerciseIdsByName.clear();
+    _sessionExerciseIds.clear();
+    await client.auth.signOut();
+  }
+
+  /// Permanently deletes the signed-in user's account: every session, set,
+  /// program, coach thread, measurement, and progress photo. Irreversible —
+  /// the caller is responsible for confirming with the user first. Calls the
+  /// `delete-account` Edge Function (service_role only lives server-side);
+  /// the function reads the target user from the request's own JWT, so this
+  /// can only ever delete the account making the call.
+  Future<void> deleteAccount() async {
+    final res = await client.functions.invoke('delete-account');
+    if (res.status != 200) {
+      final body = res.data;
+      final msg = body is Map ? body['error']?.toString() : null;
+      throw StateError(msg ?? 'Account deletion failed (${res.status}).');
+    }
     _programDayId = null;
     _threadId = null;
     _exerciseIdsByName.clear();
@@ -119,9 +161,10 @@ class SupabaseService {
 
     // profiles is identity only now, but the row must exist for the FKs.
     await client.from('profiles').upsert({'id': uid});
-    await client
-        .from('user_preferences')
-        .upsert({'user_id': uid, 'units': profile.units.id});
+    await client.from('user_preferences').upsert({
+      'user_id': uid,
+      'units': profile.units.id,
+    });
 
     await _saveTrainingProfile(uid, profile);
     await _saveConstraints(uid, profile.injuries);
@@ -191,7 +234,9 @@ class SupabaseService {
     for (final j in (joints as List).cast<Map<String, dynamic>>()) {
       final slug = j['slug'] as String;
       // 'lumbar' is spelled "lower back" by every human who has one.
-      final needles = slug == 'lumbar' ? const ['lumbar', 'lower back'] : [slug];
+      final needles = slug == 'lumbar'
+          ? const ['lumbar', 'lower back']
+          : [slug];
       if (needles.any(lower.contains)) {
         rows.add({'user_id': uid, 'joint_id': j['id'], 'label': text});
       }
@@ -233,10 +278,10 @@ class SupabaseService {
   Future<String?> openSessionForToday({String? title}) async {
     final uid = currentUser?.id;
     if (uid == null) return null;
-    final id = await client.rpc('open_session_for_today', params: {
-      'p_user_id': uid,
-      'p_title': ?title,
-    });
+    final id = await client.rpc(
+      'open_session_for_today',
+      params: {'p_user_id': uid, 'p_title': ?title},
+    );
     return id as String?;
   }
 
@@ -251,20 +296,29 @@ class SupabaseService {
   }
 
   List<String> _cues(Map<String, dynamic> exercise) {
-    final raw = (exercise['exercise_cues'] as List? ?? const [])
-        .cast<Map<String, dynamic>>()
-        .toList()
-      ..sort((a, b) => ((a['position'] as int?) ?? 0).compareTo((b['position'] as int?) ?? 0));
+    final raw =
+        (exercise['exercise_cues'] as List? ?? const [])
+            .cast<Map<String, dynamic>>()
+            .toList()
+          ..sort(
+            (a, b) => ((a['position'] as int?) ?? 0).compareTo(
+              (b['position'] as int?) ?? 0,
+            ),
+          );
     return raw.map((c) => c['body'] as String).toList();
   }
 
   /// Joint-friendly substitutes for the given catalog exercises, keyed by the
   /// exercise they replace. Backs the Swap button, which used to read a const.
-  Future<Map<String, ExerciseSpec>> fetchAlternatives(List<String> exerciseIds) async {
+  Future<Map<String, ExerciseSpec>> fetchAlternatives(
+    List<String> exerciseIds,
+  ) async {
     if (exerciseIds.isEmpty) return {};
-    const altSelect = 'exercise_id, rank, reason, '
+    const altSelect =
+        'exercise_id, rank, reason, '
         'alt:exercises!exercise_alternatives_alternative_id_fkey('
-        'id, name, default_rep_low, default_rep_high, '
+        'id, name, load_type, default_rep_low, default_rep_high, '
+        'default_start_kg, demo_path, '
         'exercise_cues(position, body), '
         'exercise_joints(joints(slug)))';
 
@@ -284,18 +338,39 @@ class SupabaseService {
         if (out.containsKey(id)) continue;
         final alt = r['alt'] as Map<String, dynamic>?;
         if (alt == null) continue;
+        // No lifting history for a movement swapped in mid-session, so the
+        // catalog's own conservative starting load stands in for prefill —
+        // the same fallback bootstrap_user_program uses — rather than 0,
+        // which reads as "bodyweight" for a movement that very much isn't.
+        final startKg = (alt['default_start_kg'] as num?)?.toDouble() ?? 0;
         out[id] = ExerciseSpec(
           id: alt['id'] as String,
           name: alt['name'] as String,
           setsTarget: 3,
           reps: (alt['default_rep_high'] as int?) ?? 10,
-          weightKg: 0,
+          weightKg: startKg,
+          loadType: (alt['load_type'] as String?) ?? 'weight_reps',
+          prefillKg: startKg,
           joints: _jointSlugs(alt),
           cues: _cues(alt),
+          demoPath: alt['demo_path'] as String?,
         );
       }
     }
     return out;
+  }
+
+  /// What's scheduled after today, for the "Up next" card on a completed
+  /// session — see `next_session_preview(uuid)`.
+  Future<NextSessionPreview> fetchNextSessionPreview() async {
+    final uid = currentUser?.id;
+    if (uid == null) return NextSessionPreview.none;
+    final json = await client.rpc(
+      'next_session_preview',
+      params: {'p_user_id': uid},
+    );
+    if (json is! Map) return NextSessionPreview.none;
+    return NextSessionPreview.fromJson(json.cast<String, dynamic>());
   }
 
   // ── sessions ─────────────────────────────────────────────────────────
@@ -313,8 +388,12 @@ class SupabaseService {
     final uid = currentUser?.id;
     if (uid == null) return;
 
-    final sessionExerciseId =
-        await _sessionExercise(uid, sessionId, exerciseId, ordinal);
+    final sessionExerciseId = await _sessionExercise(
+      uid,
+      sessionId,
+      exerciseId,
+      ordinal,
+    );
 
     await client.from('session_sets').insert({
       'user_id': uid,
@@ -326,24 +405,42 @@ class SupabaseService {
     });
   }
 
+  /// The slot, not the exercise, is what's unique per session (`unique
+  /// (session_id, ordinal)`) — a lifter can swap mid-session after this row
+  /// already exists (e.g. just viewing the page creates it), and looking
+  /// this up by exercise_id would then try to insert a second row for the
+  /// same ordinal and hit that constraint. Keying and matching on ordinal
+  /// instead, and repointing exercise_id on a mismatch, is what
+  /// `swapped_from_exercise_id` exists for — this is the substitution the
+  /// schema already models, not a workaround.
   Future<String> _sessionExercise(
     String uid,
     String sessionId,
     String exerciseId,
     int ordinal,
   ) async {
-    final key = '$sessionId:$exerciseId';
+    final key = '$sessionId:$ordinal';
     final cached = _sessionExerciseIds[key];
     if (cached != null) return cached;
 
     final existing = await client
         .from('session_exercises')
-        .select('id')
+        .select('id, exercise_id')
         .eq('session_id', sessionId)
-        .eq('exercise_id', exerciseId)
+        .eq('ordinal', ordinal)
         .maybeSingle();
     if (existing != null) {
       final id = existing['id'] as String;
+      final currentExerciseId = existing['exercise_id'] as String;
+      if (currentExerciseId != exerciseId) {
+        await client
+            .from('session_exercises')
+            .update({
+              'exercise_id': exerciseId,
+              'swapped_from_exercise_id': currentExerciseId,
+            })
+            .eq('id', id);
+      }
       _sessionExerciseIds[key] = id;
       return id;
     }
@@ -374,7 +471,12 @@ class SupabaseService {
   ) async {
     final uid = currentUser?.id;
     if (uid == null) return [];
-    final sessionExerciseId = await _sessionExercise(uid, sessionId, exerciseId, ordinal);
+    final sessionExerciseId = await _sessionExercise(
+      uid,
+      sessionId,
+      exerciseId,
+      ordinal,
+    );
 
     final rows = await client
         .from('session_sets')
@@ -385,19 +487,26 @@ class SupabaseService {
 
     return (rows as List)
         .cast<Map<String, dynamic>>()
-        .map((r) => LoggedSetRow(
-              id: r['id'] as String,
-              setNumber: r['set_number'] as int,
-              weightKg: (r['weight_kg'] as num).toDouble(),
-              reps: r['reps'] as int,
-            ))
+        .map(
+          (r) => LoggedSetRow(
+            id: r['id'] as String,
+            setNumber: r['set_number'] as int,
+            weightKg: (r['weight_kg'] as num).toDouble(),
+            reps: r['reps'] as int,
+          ),
+        )
         .toList();
   }
 
-  Future<void> updateSet(String setId, {required double weightKg, required int reps}) async {
+  Future<void> updateSet(
+    String setId, {
+    required double weightKg,
+    required int reps,
+  }) async {
     await client
         .from('session_sets')
-        .update({'weight_kg': weightKg, 'reps': reps}).eq('id', setId);
+        .update({'weight_kg': weightKg, 'reps': reps})
+        .eq('id', setId);
   }
 
   Future<void> deleteSet(String setId) async {
@@ -413,12 +522,15 @@ class SupabaseService {
     final uid = currentUser?.id;
     if (uid == null) return;
 
-    await client.from('workout_sessions').update({
-      'status': 'completed',
-      'completed_at': DateTime.now().toIso8601String(),
-      'notes': notes,
-      'session_rpe': rpe,
-    }).eq('id', sessionId);
+    await client
+        .from('workout_sessions')
+        .update({
+          'status': 'completed',
+          'completed_at': DateTime.now().toIso8601String(),
+          'notes': notes,
+          'session_rpe': rpe,
+        })
+        .eq('id', sessionId);
 
     if (pain.isNotEmpty) await _savePainReports(uid, sessionId, pain);
 
@@ -444,7 +556,11 @@ class SupabaseService {
     'ankle': 'ankle',
   };
 
-  Future<void> _savePainReports(String uid, String sessionId, List<String> pain) async {
+  Future<void> _savePainReports(
+    String uid,
+    String sessionId,
+    List<String> pain,
+  ) async {
     final slugs = pain
         .map((p) => _painSlugs[p.toLowerCase()])
         .whereType<String>()
@@ -452,14 +568,21 @@ class SupabaseService {
         .toList();
     if (slugs.isEmpty) return;
 
-    final joints =
-        await client.from('joints').select('id, slug').inFilter('slug', slugs);
-    final rows = (joints as List).cast<Map<String, dynamic>>().map((j) => {
-          'user_id': uid,
-          'session_id': sessionId,
-          'joint_id': j['id'],
-          'severity': 'moderate',
-        }).toList();
+    final joints = await client
+        .from('joints')
+        .select('id, slug')
+        .inFilter('slug', slugs);
+    final rows = (joints as List)
+        .cast<Map<String, dynamic>>()
+        .map(
+          (j) => {
+            'user_id': uid,
+            'session_id': sessionId,
+            'joint_id': j['id'],
+            'severity': 'moderate',
+          },
+        )
+        .toList();
     if (rows.isNotEmpty) {
       await client.from('session_pain_reports').insert(rows);
     }
@@ -471,10 +594,11 @@ class SupabaseService {
   Future<void> logWeight(double weightKg) async {
     final uid = currentUser?.id;
     if (uid == null) return;
-    await client.from('body_measurements').upsert(
-      {'user_id': uid, 'measured_on': _today(), 'weight_kg': weightKg},
-      onConflict: 'user_id,measured_on',
-    );
+    await client.from('body_measurements').upsert({
+      'user_id': uid,
+      'measured_on': _today(),
+      'weight_kg': weightKg,
+    }, onConflict: 'user_id,measured_on');
   }
 
   /// From `v_bodyweight_trend`, so each entry carries both the raw reading
@@ -490,11 +614,13 @@ class SupabaseService {
         .order('measured_on', ascending: false)
         .limit(limit);
     return (rows as List)
-        .map((r) => WeightEntry(
-              weightKg: (r['raw_kg'] as num).toDouble(),
-              avgKg: (r['avg_7d'] as num?)?.toDouble(),
-              loggedAt: DateTime.parse(r['measured_on'] as String),
-            ))
+        .map(
+          (r) => WeightEntry(
+            weightKg: (r['raw_kg'] as num).toDouble(),
+            avgKg: (r['avg_7d'] as num?)?.toDouble(),
+            loggedAt: DateTime.parse(r['measured_on'] as String),
+          ),
+        )
         .toList()
         .reversed
         .toList();
@@ -507,8 +633,10 @@ class SupabaseService {
   Future<ProteinTarget> fetchProteinTarget() async {
     final uid = currentUser?.id;
     if (uid == null) return ProteinTarget.placeholder;
-    final rows =
-        await client.rpc('protein_target_for', params: {'p_user_id': uid});
+    final rows = await client.rpc(
+      'protein_target_for',
+      params: {'p_user_id': uid},
+    );
     final list = (rows as List?) ?? const [];
     if (list.isEmpty) return ProteinTarget.placeholder;
     return ProteinTarget.fromRow((list.first as Map).cast<String, dynamic>());
@@ -540,10 +668,12 @@ class SupabaseService {
         .order('logged_at', ascending: false)
         .limit(limit);
     return (rows as List)
-        .map((r) => ProteinEntry(
-              grams: (r['protein_g'] as num).round(),
-              loggedAt: DateTime.parse(r['logged_at'] as String).toLocal(),
-            ))
+        .map(
+          (r) => ProteinEntry(
+            grams: (r['protein_g'] as num).round(),
+            loggedAt: DateTime.parse(r['logged_at'] as String).toLocal(),
+          ),
+        )
         .toList()
         .reversed
         .toList();
@@ -553,7 +683,9 @@ class SupabaseService {
 
   /// Completed sessions, newest first. Set count and tonnage come from
   /// v_session_totals rather than being recomputed over raw sets.
-  Future<List<SessionHistoryEntry>> fetchSessionHistory({int limit = 12}) async {
+  Future<List<SessionHistoryEntry>> fetchSessionHistory({
+    int limit = 12,
+  }) async {
     final uid = currentUser?.id;
     if (uid == null) return [];
     final rows = await client
@@ -567,7 +699,9 @@ class SupabaseService {
       final completed = r['completed_at'] as String?;
       return SessionHistoryEntry(
         label: (r['title'] as String?) ?? 'Session',
-        date: DateTime.parse(completed ?? r['performed_on'] as String).toLocal(),
+        date: DateTime.parse(
+          completed ?? r['performed_on'] as String,
+        ).toLocal(),
         setCount: (r['set_count'] as num?)?.toInt() ?? 0,
         volumeKg: (r['volume_kg'] as num?)?.toDouble() ?? 0,
       );
@@ -577,7 +711,10 @@ class SupabaseService {
   /// Top set per day for a given exercise, oldest first — the series behind
   /// the strength trend chart. Takes the display name the progress screen
   /// shows and resolves it back to a catalog id.
-  Future<List<StrengthPoint>> fetchStrengthTrend(String exerciseName, {int limit = 12}) async {
+  Future<List<StrengthPoint>> fetchStrengthTrend(
+    String exerciseName, {
+    int limit = 12,
+  }) async {
     final uid = currentUser?.id;
     if (uid == null) return [];
 
@@ -594,10 +731,12 @@ class SupabaseService {
         .limit(limit);
 
     return (rows as List)
-        .map((r) => StrengthPoint(
-              date: DateTime.parse(r['performed_on'] as String),
-              topSetKg: (r['top_weight_kg'] as num).toDouble(),
-            ))
+        .map(
+          (r) => StrengthPoint(
+            date: DateTime.parse(r['performed_on'] as String),
+            topSetKg: (r['top_weight_kg'] as num).toDouble(),
+          ),
+        )
         .toList()
         .reversed
         .toList();
@@ -607,10 +746,10 @@ class SupabaseService {
     final cached = _exerciseIdsByName[name];
     if (cached != null) return cached;
 
-    final rows = await client.rpc('resolve_exercise', params: {
-      'p_user_id': uid,
-      'p_name': name,
-    });
+    final rows = await client.rpc(
+      'resolve_exercise',
+      params: {'p_user_id': uid, 'p_name': name},
+    );
     final list = (rows as List?) ?? const [];
     if (list.isEmpty) return null;
     final id = (list.first as Map)['exercise_id'] as String?;
@@ -627,8 +766,10 @@ class SupabaseService {
     // `exercises(...)` embed is ambiguous and PostgREST rejects it (PGRST201).
     final rows = await client
         .from('session_exercises')
-        .select('exercise_id, '
-            'exercises!session_exercises_exercise_id_fkey!inner(name)')
+        .select(
+          'exercise_id, '
+          'exercises!session_exercises_exercise_id_fkey!inner(name)',
+        )
         .eq('user_id', uid)
         .limit(500);
 
@@ -652,7 +793,8 @@ class SupabaseService {
     final uid = currentUser?.id;
     if (uid == null) return {};
     final since = DateTime.now().subtract(Duration(days: days));
-    final sinceDate = '${since.year.toString().padLeft(4, '0')}-'
+    final sinceDate =
+        '${since.year.toString().padLeft(4, '0')}-'
         '${since.month.toString().padLeft(2, '0')}-'
         '${since.day.toString().padLeft(2, '0')}';
 
@@ -730,10 +872,12 @@ class SupabaseService {
         .limit(limit);
 
     return (rows as List)
-        .map((r) => ChatMessage(
-              sender: r['role'] == 'user' ? 'user' : 'coach',
-              body: r['content'] as String,
-            ))
+        .map(
+          (r) => ChatMessage(
+            sender: r['role'] == 'user' ? 'user' : 'coach',
+            body: r['content'] as String,
+          ),
+        )
         .toList();
   }
 
@@ -747,10 +891,13 @@ class SupabaseService {
 
   /// One chat turn. Returns the reply and any proposal awaiting confirmation.
   Future<CoachTurn> coachTurn(String text) async {
-    final res = await client.functions.invoke('coach', body: {
-      'text': text,
-      if (_coachThreadId != null) 'thread_id': _coachThreadId,
-    });
+    final res = await client.functions.invoke(
+      'coach',
+      body: {
+        'text': text,
+        if (_coachThreadId != null) 'thread_id': _coachThreadId,
+      },
+    );
 
     final data = res.data;
     if (data is! Map) throw StateError('Unexpected coach response: $data');

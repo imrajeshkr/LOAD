@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../models/models.dart';
+import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/app_widgets.dart';
@@ -41,35 +42,7 @@ class GuideScreen extends StatelessWidget {
           ),
           const SizedBox(height: 18),
 
-          // Placeholder for the looping demo clip. Sourcing real animation
-          // assets is a content decision, not a layout one — the slot is
-          // sized and styled so dropping media in later needs no rework.
-          AspectRatio(
-            aspectRatio: 16 / 10,
-            child: Container(
-              decoration: BoxDecoration(
-                color: AppColors.chipFill,
-                borderRadius: BorderRadius.circular(AppRadii.card),
-              ),
-              child: const Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.play_circle_outline_rounded,
-                      size: 40, color: AppColors.accent),
-                  SizedBox(height: 10),
-                  Text(
-                    'Demo clip coming soon',
-                    style: TextStyle(
-                      fontFamily: AppTheme.fontFamily,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                      color: AppColors.accent,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          ExerciseDemoMedia(url: SupabaseService.instance.demoUrl(exercise.demoPath)),
 
           const SizedBox(height: 22),
           const SectionLabel('Form cues'),

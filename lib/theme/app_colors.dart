@@ -1,63 +1,50 @@
 import 'package:flutter/material.dart';
 
-/// Warm, coach-like palette — ported directly from the design guide
-/// (`.local/design-guides/Fitness Coach App (standalone).html`).
-/// Source values were oklch; hex here is the converted sRGB equivalent.
+/// LOAD v2 palette — dark, from `design_handoff_load_app` tokens.
+///
+/// Old v1 token names are kept as aliases mapped to their nearest v2 value so
+/// not-yet-rewritten screens keep compiling during the rebuild. New screens
+/// use the v2 names.
 class AppColors {
   AppColors._();
 
-  /// Page background — warm cream. oklch(97% 0.012 50)
-  static const Color background = Color(0xFFFCF3EE);
+  // ── v2 tokens ──────────────────────────────────────────────────────────
+  static const page = Color(0xFF100E0D); // app background, inside the device
+  static const pageOuter = Color(0xFF0A0908); // preview only
+  static const surface = Color(0xFF1B1817); // cards, panels, inputs, nav
+  static const surfaceSunken = Color(0xFF100E0D); // wells inside a card
+  static const surfaceRaised = Color(0xFF161413); // bottom sheet
+  static const border = Color(0xFF2A2624); // default hairline / card border
+  static const borderStrong = Color(0xFF3A3532); // focused field, sheet handle
+  static const borderFaint = Color(0xFF221F1D); // dim, not-yet-reached rows
 
-  /// Cards sit on the cream background as plain white.
-  static const Color surface = Color(0xFFFFFFFF);
+  static const accent = Color(0xFFC8F751); // primary action, positive, active
+  static const accentBright = Color(0xFFDCFF7A); // link hover only
+  static const accentMid = Color(0xFF9BC93F); // second bar in a ranking
+  static const accentDeep = Color(0xFF7FA83A); // third bar; effective-zone label
+  static const warn = Color(0xFFFF8A5B); // injury, stall, destructive, shortfall
 
-  /// Inputs / inset wells. oklch(95% 0.015 45)
-  static const Color inputFill = Color(0xFFF8ECE6);
+  static const textPrimary = Color(0xFFF5EFEA); // headings, values
+  static const textSecondary = Color(0xFFBDB2AB); // body inside a highlight card
+  static const textMuted = Color(0xFF8C817A); // labels, captions
+  static const textFaint = Color(0xFF6E655F); // inactive tab icon, disabled
+  static const textDim = Color(0xFF5C5450); // rarely — never must-read
+  static const inactiveFill = Color(0xFF4E4744); // chart dots, dim glyphs
 
-  /// Hairline dividers inside white cards. oklch(93% 0.02 45)
-  static const Color divider = Color(0xFFF4E4DD);
+  static const onAccent = Color(0xFF100E0D); // text/icon on the lime accent
 
-  /// Soft peach used for nudges / welcome-back banners. oklch(93% 0.03 40)
-  static const Color peach = Color(0xFFFBE2D9);
-
-  /// Pill background behind small chips ("Guide"). oklch(94% 0.03 40)
-  static const Color chipFill = Color(0xFFFEE5DC);
-
-  /// Primary accent — warm brick red. oklch(55% 0.15 25)
-  static const Color accent = Color(0xFFB94642);
-  static const Color onAccent = Color(0xFFFFFFFF);
-
-  /// Headings. oklch(26% 0.02 30)
-  static const Color textPrimary = Color(0xFF2D211E);
-
-  /// Body copy on cards. oklch(28% 0.02 30)
-  static const Color textBody = Color(0xFF322523);
-
-  /// Slightly lighter body text. oklch(35% 0.02 35)
-  static const Color textMuted = Color(0xFF443734);
-
-  /// Labels and captions. oklch(55% 0.02 40)
-  static const Color textSecondary = Color(0xFF7C6E69);
-
-  /// Disabled / faint. oklch(65% 0.02 45)
-  static const Color textFaint = Color(0xFF9A8C85);
-
-  /// Inactive tab glyphs. oklch(60% 0.02 45)
-  static const Color inactive = Color(0xFF8B7D77);
-
-  /// Injury conflict warning. oklch(55% 0.14 55)
-  static const Color warning = Color(0xFFAD5600);
-
-  /// Coach note about a prior session. oklch(50% 0.1 60)
-  static const Color note = Color(0xFF8C541F);
-
-  /// Positive / progress. Kept muted so it reads warm, not neon.
-  static const Color positive = Color(0xFF006925);
-  static const Color positiveSoft = Color(0xFFE3F0E4);
-
-  static const Color error = Color(0xFFB3261E);
-
-  /// Track colour behind progress bars. oklch(90% 0.02 45)
-  static const Color track = Color(0xFFEADAD3);
+  // ── v1 aliases (mapped to v2; remove as screens are rewritten) ───────────
+  static const background = page;
+  static const inputFill = surfaceSunken;
+  static const divider = border;
+  static const chipFill = surfaceSunken;
+  static const peach = surface;
+  static const positive = accent;
+  static const positiveSoft = Color(0xFF243015);
+  static const warning = warn;
+  static const note = warn;
+  static const error = warn;
+  static const textBody = textSecondary;
+  static const inactive = textFaint;
+  static const track = border;
 }

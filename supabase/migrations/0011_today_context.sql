@@ -244,7 +244,7 @@ begin
       -- Prefill: what they actually used last time, never a pre-progressed
       -- number. Being told you should be stronger than you are, on every set,
       -- is worse than one extra tap.
-      'prefill_kg',    coalesce((prev.sets -> -1 -> 0)::numeric, p.target_weight_kg, 0),
+      'prefill_kg',    coalesce((prev.sets -> -1 ->> 0)::numeric, p.target_weight_kg, 0),
       'prefill_reps',  coalesce(p.rep_high, 10),
       'joints',        coalesce((select jsonb_agg(j.slug)
                                    from exercise_joints ej join joints j on j.id = ej.joint_id

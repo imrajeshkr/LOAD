@@ -38,11 +38,11 @@ class _AppShellState extends State<AppShell> {
         bottom: false,
         child: IndexedStack(
           index: _index,
-          children: const [
-            TodayScreen(),
-            ProgressScreen(),
-            ChatScreen(),
-            SettingsScreen(),
+          children: [
+            TodayScreen(onOpenProfile: () => setState(() => _index = 3)),
+            const ProgressScreen(),
+            const ChatScreen(),
+            const SettingsScreen(),
           ],
         ),
       ),

@@ -1,14 +1,16 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'theme/app_theme.dart';
 import 'services/app_state.dart';
-import 'services/supabase_service.dart';
-import 'screens/auth/auth_screen.dart';
-import 'screens/onboarding/onboarding_flow.dart';
-import 'screens/app_shell.dart';
+import 'screens/v2/root_gate.dart';
+import 'screens/v2/splash_v2.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,6 +19,19 @@ Future<void> main() async {
     url: dotenv.env['SUPABASE_URL']!,
     publishableKey: dotenv.env['SUPABASE_ANON_KEY']!,
   );
+
+  // Native Google Sign-In. serverClientId (the Web OAuth client) is what
+  // Supabase's Google provider checks the id token's audience against; the
+  // platform clientId is only needed on iOS to drive the native sheet.
+  final webClientId = dotenv.env['GOOGLE_WEB_CLIENT_ID'];
+  final iosClientId = dotenv.env['GOOGLE_IOS_CLIENT_ID'];
+  if (webClientId != null && webClientId.isNotEmpty) {
+    await GoogleSignIn.instance.initialize(
+      clientId: (!kIsWeb && Platform.isIOS) ? iosClientId : null,
+      serverClientId: webClientId,
+    );
+  }
+
   runApp(const LoadApp());
 }
 
@@ -30,55 +45,26 @@ class LoadApp extends StatelessWidget {
       child: MaterialApp(
         title: 'LOAD',
         debugShowCheckedModeBanner: false,
-        theme: AppTheme.light,
-        home: const AuthGate(),
+        theme: AppTheme.theme,
+        home: const _Launch(),
       ),
     );
   }
 }
 
-class AuthGate extends StatelessWidget {
-  const AuthGate({super.key});
-
+/// Plays the 1a splash once on cold start, then hands off to the app's front
+/// door. The splash is a brand moment, independent of auth state.
+class _Launch extends StatefulWidget {
+  const _Launch();
   @override
-  Widget build(BuildContext context) {
-    return StreamBuilder<AuthState>(
-      stream: SupabaseService.instance.authStateChanges,
-      builder: (context, snapshot) {
-        final session = SupabaseService.instance.currentUser;
-        if (session == null) {
-          return const AuthScreen();
-        }
-        return const _PostAuthLoader();
-      },
-    );
-  }
+  State<_Launch> createState() => _LaunchState();
 }
 
-/// Loads the profile once signed in, then routes to onboarding or the app shell.
-class _PostAuthLoader extends StatefulWidget {
-  const _PostAuthLoader();
-
-  @override
-  State<_PostAuthLoader> createState() => _PostAuthLoaderState();
-}
-
-class _PostAuthLoaderState extends State<_PostAuthLoader> {
-  bool _started = false;
-
+class _LaunchState extends State<_Launch> {
+  bool _done = false;
   @override
   Widget build(BuildContext context) {
-    final state = context.watch<AppState>();
-    if (!_started) {
-      _started = true;
-      Future.microtask(() => state.loadInitial());
-    }
-    if (state.loading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-    if (!state.profile.isComplete) {
-      return const OnboardingFlow();
-    }
-    return const AppShell();
+    if (_done) return const RootGate();
+    return SplashV2(onDone: () => setState(() => _done = true));
   }
 }
