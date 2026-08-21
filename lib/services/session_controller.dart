@@ -117,13 +117,14 @@ class SessionController extends ChangeNotifier {
   }
 
   /// Prefill for the next set: explicit edit wins, else previous set today,
-  /// else the plan (weight) / top of range (reps).
+  /// else the adaptive plan target computed server-side (weight via [planKg],
+  /// reps via the double-progression prefill).
   (double, int) staged() {
     final e = ex;
     final done = _sets[idx];
     final last = done.isNotEmpty ? done.last : null;
     final w = _stagedKg ?? (last?.kg ?? planKg(idx));
-    final r = _stagedReps ?? (last?.reps ?? e.repHigh);
+    final r = _stagedReps ?? (last?.reps ?? e.prefillReps);
     return (w, r);
   }
 
