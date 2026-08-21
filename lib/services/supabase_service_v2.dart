@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'supabase_service.dart';
 import '../models/v2_models.dart';
 
@@ -205,9 +207,11 @@ extension SupabaseServiceV2 on SupabaseService {
       'rest_started_at': null,
       'rest_total_seconds': null,
     }).eq('id', sessionId);
-    try {
-      await _writeSessionDebrief(sessionId);
-    } catch (_) {/* non-fatal: the session is saved either way */}
+    // Fire-and-forget: the session is already saved. The debrief note lands in
+    // the Trainer thread in the background so finishing — and landing on the
+    // post-session summary — is never gated on writing it. Idempotent, so a
+    // retry or a double finish still yields one note.
+    unawaited(_writeSessionDebrief(sessionId).catchError((_) {}));
   }
 
   Future<void> setSituation(String sessionId, String? situation) async {
@@ -877,6 +881,7 @@ extension SupabaseServiceV2 on SupabaseService {
     bool needsAttention = false,
     List<(String, String)> receipts = const [],
     Map<String, dynamic>? card,
+    String? sourceSessionId,
   }) async {
     final uid = currentUser?.id;
     if (uid == null) return;
@@ -891,6 +896,7 @@ extension SupabaseServiceV2 on SupabaseService {
           'needs_attention': needsAttention,
           if (pinnedToday) 'pinned_until': _todayStr(),
           'card': ?card,
+          'source_session_id': ?sourceSessionId,
         })
         .select('id')
         .single();
@@ -951,7 +957,21 @@ extension SupabaseServiceV2 on SupabaseService {
   }
 
   /// A debrief written when a session is finished, shaped by what happened.
+  /// Idempotent: one debrief per session (a finish that fires twice is a
+  /// no-op), backed by the unique index in v2_0013.
   Future<void> _writeSessionDebrief(String sessionId) async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+
+    final existing = await client
+        .from('coach_messages')
+        .select('id')
+        .eq('user_id', uid)
+        .eq('category', 'session_debrief')
+        .eq('source_session_id', sessionId)
+        .maybeSingle();
+    if (existing != null) return;
+
     final s = await fetchSessionSummary(sessionId);
     if (s == null || s.setCount == 0) return;
     final threadId = await _ensureCoachThread();
@@ -975,6 +995,7 @@ extension SupabaseServiceV2 on SupabaseService {
       threadId: threadId,
       category: 'session_debrief',
       content: content,
+      sourceSessionId: sessionId,
       card: {
         'stats': [
           {'value': '${s.setCount}', 'label': 'sets'},
