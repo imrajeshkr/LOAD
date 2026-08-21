@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/v2_models.dart';
 import '../../services/session_controller.dart';
+import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
@@ -57,7 +58,7 @@ class _LiftScreen extends StatelessWidget {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
               children: [
-                _ExerciseHead(e: e, index: c.idx),
+                _ExerciseHead(e: e, index: c.order.indexOf(c.idx)),
                 const SizedBox(height: 12),
                 _GuideMedia(e: e, cuesOpen: c.cuesOpen, onToggle: c.toggleCues),
                 if (c.cuesOpen && e.cues.isNotEmpty) ...[
@@ -112,58 +113,313 @@ class _Header extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 34),
+          _CircleBtn(
+            icon: Icons.tune_rounded,
+            onTap: () => _BoardSheet.open(context, c),
+          ),
         ],
       ),
     );
   }
 }
 
+/// A live map of the session, in the lifter's chosen order — tap any lift to
+/// go there, no lift is "next". Half-finished lifts keep their sets.
 class _Rail extends StatelessWidget {
   final SessionController c;
   const _Rail({required this.c});
+
   @override
   Widget build(BuildContext context) {
+    final order = c.order;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
       child: Row(
         children: [
-          for (var i = 0; i < c.exercises.length; i++) ...[
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      for (var p = 0; p < c.exercises[i].setsTarget; p++)
-                        Expanded(
-                          child: Container(
-                            height: 3,
-                            margin: EdgeInsets.only(right: p == c.exercises[i].setsTarget - 1 ? 0 : 2),
-                            decoration: BoxDecoration(
-                              color: p < c.setsLogged(i) ? AppColors.accent : AppColors.border,
-                              borderRadius: BorderRadius.circular(2),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 5),
-                  Text(c.exercises[i].name.toUpperCase(),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontWeight: FontWeight.w500,
-                          fontSize: 8.5,
-                          letterSpacing: 0.4,
-                          color: i == c.idx ? AppColors.accent : AppColors.textFaint)),
-                ],
-              ),
-            ),
-            if (i != c.exercises.length - 1) const SizedBox(width: 4),
+          for (var k = 0; k < order.length; k++) ...[
+            Expanded(child: _RailItem(c: c, exIdx: order[k])),
+            if (k != order.length - 1) const SizedBox(width: 4),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _RailItem extends StatelessWidget {
+  final SessionController c;
+  final int exIdx;
+  const _RailItem({required this.c, required this.exIdx});
+
+  @override
+  Widget build(BuildContext context) {
+    final e = c.exercises[exIdx];
+    final state = c.liftState(exIdx);
+    final isCurrent = exIdx == c.idx;
+    final logged = c.setsLogged(exIdx);
+
+    final Color barDone = switch (state) {
+      LiftState.done => AppColors.accent,
+      LiftState.deferred => AppColors.textMuted,
+      _ => AppColors.accent,
+    };
+    final Color nameColor = isCurrent
+        ? AppColors.accent
+        : state == LiftState.done
+            ? AppColors.textMuted
+            : AppColors.textFaint;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        if (!isCurrent) {
+          Haptics.selection();
+          c.goTo(exIdx);
+        }
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (state == LiftState.deferred)
+                Expanded(
+                  child: Container(
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: AppColors.borderStrong,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                )
+              else
+                for (var p = 0; p < e.setsTarget; p++)
+                  Expanded(
+                    child: Container(
+                      height: 3,
+                      margin: EdgeInsets.only(right: p == e.setsTarget - 1 ? 0 : 2),
+                      decoration: BoxDecoration(
+                        color: p < logged ? barDone : AppColors.border,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          Row(
+            children: [
+              if (state == LiftState.deferred)
+                const Padding(
+                  padding: EdgeInsets.only(right: 3),
+                  child: Icon(Icons.schedule_rounded, size: 8, color: AppColors.textMuted),
+                ),
+              Flexible(
+                child: Text(e.name.toUpperCase(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                        fontSize: 8.5,
+                        letterSpacing: 0.4,
+                        color: nameColor)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The "Today's lifts" board — reorder the session, tap to jump. Half-finished
+/// lifts keep their sets; the order is session-only unless "Make it the plan".
+class _BoardSheet extends StatelessWidget {
+  final SessionController c;
+  const _BoardSheet({required this.c});
+
+  static Future<void> open(BuildContext context, SessionController c) {
+    return showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => ChangeNotifierProvider<SessionController>.value(
+        value: c,
+        child: _BoardSheet(c: c),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceRaised,
+        border: Border(top: BorderSide(color: AppColors.border)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      padding: EdgeInsets.fromLTRB(20, 10, 20, 16 + MediaQuery.of(context).padding.bottom),
+      child: Consumer<SessionController>(
+        builder: (context, c, _) {
+          final order = c.order;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                      color: AppColors.borderStrong, borderRadius: BorderRadius.circular(3)),
+                ),
+              ),
+              const Text("Today's lifts",
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 18,
+                      color: AppColors.textPrimary)),
+              const SizedBox(height: 4),
+              const Text('Any order is fine. Drag to reorder, tap a lift to go there — '
+                  'half-finished ones keep their sets.',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontSize: 11.5,
+                      height: 1.4,
+                      color: AppColors.textMuted)),
+              const SizedBox(height: 14),
+              Flexible(
+                child: ReorderableListView.builder(
+                  shrinkWrap: true,
+                  buildDefaultDragHandles: false,
+                  itemCount: order.length,
+                  onReorder: c.reorderLifts,
+                  proxyDecorator: (child, i, anim) =>
+                      Material(color: Colors.transparent, child: child),
+                  itemBuilder: (context, pos) {
+                    final exIdx = order[pos];
+                    return _BoardRow(
+                      key: ValueKey(exIdx),
+                      c: c,
+                      exIdx: exIdx,
+                      pos: pos,
+                      onJump: () {
+                        Haptics.selection();
+                        c.goTo(exIdx);
+                        Navigator.of(context).pop();
+                      },
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (c.orderDirty) ...[
+                _PrimaryBtn(
+                  label: 'Just today',
+                  onTap: () => Navigator.of(context).pop(),
+                ),
+                const SizedBox(height: 10),
+                _SecondaryBtn(
+                  icon: Icons.push_pin_outlined,
+                  label: 'Make it the plan',
+                  onTap: () {
+                    c.makeOrderThePlan();
+                    Navigator.of(context).pop();
+                  },
+                ),
+              ] else
+                _SecondaryBtn(
+                  icon: Icons.check_rounded,
+                  label: 'Done',
+                  onTap: () => Navigator.of(context).pop(),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _BoardRow extends StatelessWidget {
+  final SessionController c;
+  final int exIdx;
+  final int pos;
+  final VoidCallback onJump;
+  const _BoardRow({
+    super.key,
+    required this.c,
+    required this.exIdx,
+    required this.pos,
+    required this.onJump,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final e = c.exercises[exIdx];
+    final state = c.liftState(exIdx);
+    final isCurrent = exIdx == c.idx;
+    final (meta, dotColor) = switch (state) {
+      LiftState.done => ('done · ${c.setsLogged(exIdx)} sets', AppColors.accent),
+      LiftState.inProgress =>
+        ('${c.setsLogged(exIdx)} of ${c.target(exIdx)} sets', AppColors.warn),
+      LiftState.deferred => ('saved for the end', AppColors.textMuted),
+      LiftState.untouched => ('not started', AppColors.textFaint),
+    };
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.only(bottom: 8),
+      child: GestureDetector(
+        onTap: onJump,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          decoration: BoxDecoration(
+            color: isCurrent ? AppColors.accent.withValues(alpha: 0.08) : AppColors.surface,
+            border: Border.all(color: isCurrent ? AppColors.accent : AppColors.border),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 7, height: 7,
+                margin: const EdgeInsets.only(right: 10),
+                decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(e.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w500,
+                            fontSize: 13.5,
+                            color: AppColors.textPrimary)),
+                    const SizedBox(height: 1),
+                    Text(meta,
+                        style: const TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontSize: 10.5,
+                            color: AppColors.textMuted)),
+                  ],
+                ),
+              ),
+              ReorderableDragStartListener(
+                index: pos,
+                child: const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Icon(Icons.drag_indicator_rounded, size: 18, color: AppColors.textFaint),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -673,7 +929,7 @@ class _BottomBar extends StatelessWidget {
             )
           else if (c.exDone)
             _PrimaryBtn(
-              label: c.idx >= c.exercises.length - 1 ? 'Finish session' : 'Next exercise',
+              label: c.hasOtherOpenLift ? 'Next lift' : 'Finish session',
               onTap: c.advance,
             )
           else if (c.entry == EntryModeV2.live && !c.resting)
@@ -695,7 +951,7 @@ class _BottomBar extends StatelessWidget {
             )
           else if (c.entry == EntryModeV2.deferred)
             _PrimaryBtn(
-              label: c.idx >= c.exercises.length - 1 ? 'Finish session' : 'Next exercise',
+              label: c.hasOtherOpenLift ? 'Next lift' : 'Finish session',
               onTap: c.advance,
             ),
         ],

@@ -45,6 +45,12 @@ extension SupabaseServiceV2 on SupabaseService {
     });
   }
 
+  /// "Make it the plan": persist a session's reordered lifts to today's program
+  /// day so future sessions present the new order. [exerciseIds] in order.
+  Future<void> reorderMyDay(List<String> exerciseIds) async {
+    await client.rpc('reorder_my_day', params: {'p_exercise_ids': exerciseIds});
+  }
+
   /// The single open session, created if needed. One in_progress session per
   /// user is a hard DB invariant, so an already-open session (even from an
   /// earlier day the lifter never finished) is resumed rather than colliding —

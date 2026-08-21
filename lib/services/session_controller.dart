@@ -7,6 +7,10 @@ import 'supabase_service_v2.dart';
 
 enum FlowScreen { lift, review, done }
 
+/// A lift's state on the live rail / board — no lift is "next", each just
+/// shows where it stands.
+enum LiftState { untouched, inProgress, done, deferred }
+
 /// One logged set, in progress or committed.
 class SetRow {
   double? kg; // null for bodyweight
@@ -41,6 +45,7 @@ class SessionController extends ChangeNotifier {
     _effort = List.filled(exercises.length, null);
     _extra = List.filled(exercises.length, 0);
     _unconfirmed = List.filled(exercises.length, false);
+    _order = List.generate(exercises.length, (i) => i);
 
     // Rehydrate from what's already logged, so "Continue session" actually
     // continues — otherwise every resume silently started blank at lift one.
@@ -74,6 +79,11 @@ class SessionController extends ChangeNotifier {
   late List<EffortV2?> _effort;
   late List<int> _extra; // delta on planned set count
   late List<bool> _unconfirmed;
+
+  /// Display order over [exercises] — the free-order board reorders this, not
+  /// the underlying lists. Identity until the lifter drags.
+  late List<int> _order;
+  bool _orderDirty = false; // reordered this session, not yet "made the plan"
 
   bool cuesOpen = true;
   bool askFeel = false;
@@ -137,6 +147,61 @@ class SessionController extends ChangeNotifier {
 
   int setsLogged(int i) => _sets[i].length;
   bool exerciseDeferred(int i) => _entry[i] == EntryModeV2.deferred;
+
+  // ── free-order navigation ──────────────────────────────────────────────
+  /// Exercise indices in the lifter's chosen display order.
+  List<int> get order => List.unmodifiable(_order);
+  bool get orderDirty => _orderDirty;
+
+  /// Where a lift stands — drives the rail/board, no lift is "next".
+  LiftState liftState(int i) {
+    if (_entry[i] == EntryModeV2.deferred && _sets[i].isEmpty) return LiftState.deferred;
+    if (_sets[i].isEmpty) return LiftState.untouched;
+    if (_sets[i].length >= target(i)) return LiftState.done;
+    return LiftState.inProgress;
+  }
+
+  bool _isOpenLift(int i) {
+    final s = liftState(i);
+    return s == LiftState.untouched || s == LiftState.inProgress;
+  }
+
+  /// Another lift still needs work — so the primary action reads "Next lift"
+  /// rather than "Finish session".
+  bool get hasOtherOpenLift => _order.any((j) => j != idx && _isOpenLift(j));
+
+  /// Jump straight to any lift. Rest keeps running — the whole point is you can
+  /// go train something else while you recover.
+  void goTo(int exIdx) {
+    if (exIdx < 0 || exIdx >= exercises.length) return;
+    idx = exIdx;
+    cuesOpen = _sets[idx].isEmpty;
+    askFeel = false;
+    _stagedKg = null;
+    _stagedReps = null;
+    notifyListeners();
+  }
+
+  /// Reorder the board (ReorderableList indices).
+  void reorderLifts(int fromPos, int toPos) {
+    if (toPos > fromPos) toPos -= 1;
+    if (fromPos == toPos) return;
+    final v = _order.removeAt(fromPos);
+    _order.insert(toPos, v);
+    _orderDirty = true;
+    notifyListeners();
+  }
+
+  /// "Make it the plan" — persist the current order to future sessions of this
+  /// program day. "Just today" simply leaves [_order] as the session order.
+  Future<void> makeOrderThePlan() async {
+    final ids = _order.map((i) => exercises[i].exerciseId).toList();
+    _orderDirty = false;
+    notifyListeners();
+    try {
+      await _svc.reorderMyDay(ids);
+    } catch (_) {/* session order still holds; the plan just didn't persist */}
+  }
   /// True once a deferred lift has been given real numbers in the review
   /// screen (tapped open, edited, saved) rather than left to auto-fill.
   bool exerciseConfirmed(int i) => !_unconfirmed[i] && _sets[i].isNotEmpty;
@@ -269,18 +334,20 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// "Next" is a convenience, not the only path: move to the next still-open
+  /// lift in display order (wrapping past the current one), else finish. Rest
+  /// stops here because the lifter deliberately moved on from this lift.
   void advance() {
     _stopRest();
-    if (idx >= exercises.length - 1) {
-      _finish();
-      return;
+    final pos = _order.indexOf(idx);
+    for (var k = 1; k <= _order.length; k++) {
+      final j = _order[(pos + k) % _order.length];
+      if (j != idx && _isOpenLift(j)) {
+        goTo(j);
+        return;
+      }
     }
-    idx += 1;
-    cuesOpen = _sets[idx].isEmpty;
-    askFeel = false;
-    _stagedKg = null;
-    _stagedReps = null;
-    notifyListeners();
+    _finish();
   }
 
   void skipRest() {
