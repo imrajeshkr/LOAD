@@ -87,6 +87,7 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
     if (_index == _trainIndex && i != _trainIndex) {
       trainProgressionDismissedOn = DateTime.now();
     }
+    final leavingTrainer = _index == _trainerIndex && i != _trainerIndex;
     setState(() {
       _index = i;
       // Opening the Trainer tab reads the thread, so drop the badge at once.
@@ -99,7 +100,20 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
     // what surfaces a note written while they were elsewhere (a session
     // debrief the moment they finish, say). Skipped when opening Trainer so the
     // optimistic clear above doesn't flicker back before the read lands.
-    if (i != _trainerIndex) _refreshUnread();
+    if (i != _trainerIndex) {
+      // On the way out of Trainer, persist "read" for the whole thread first,
+      // THEN recount. The Trainer tab is kept alive in the IndexedStack and
+      // only self-marks on scroll/first-load, so a note that arrived while it
+      // sat open would otherwise still count as unread and re-light the dot.
+      leavingTrainer ? _markReadThenRefresh() : _refreshUnread();
+    }
+  }
+
+  Future<void> _markReadThenRefresh() async {
+    try {
+      await SupabaseService.instance.markCoachThreadRead();
+    } catch (_) {/* recount below still self-corrects */}
+    await _refreshUnread();
   }
 
   @override
