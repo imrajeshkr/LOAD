@@ -25,6 +25,26 @@ extension SupabaseServiceV2 on SupabaseService {
     return id as String?;
   }
 
+  /// Roll the schedule forward so the calendar is always ~5 weeks deep. Cheap,
+  /// idempotent; called fire-and-forget after a Train load.
+  Future<void> ensureSchedule() async {
+    if (currentUser == null) return;
+    try {
+      await client.rpc('ensure_my_schedule');
+    } catch (_) {/* the calendar is already filled near-term; harmless */}
+  }
+
+  /// Reorder the split by swapping two training days. [scope] is 'week' (just
+  /// these dates) or 'forever' (the pattern, every week from now). Undo by
+  /// calling again with [from] and [to] swapped.
+  Future<void> swapScheduledDays(DateTime from, DateTime to, String scope) async {
+    await client.rpc('swap_scheduled_days', params: {
+      'p_from': _dateStr(from),
+      'p_to': _dateStr(to),
+      'p_scope': scope,
+    });
+  }
+
   /// The single open session, created if needed. One in_progress session per
   /// user is a hard DB invariant, so an already-open session (even from an
   /// earlier day the lifter never finished) is resumed rather than colliding —

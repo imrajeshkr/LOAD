@@ -74,6 +74,9 @@ class _TrainTabState extends State<TrainTab> {
       // Surfacing the note counts as reading it.
       final note = _note;
       if (note != null && note.readAt == null) svc.markNoteRead(note.id);
+      // Keep the calendar rolling ~5 weeks ahead. Fire-and-forget: today and
+      // the near term already exist, so this load never waits on it.
+      svc.ensureSchedule();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -148,6 +151,71 @@ class _TrainTabState extends State<TrainTab> {
     if (mounted) _load();
   }
 
+  // ── calendar day swap (#4) ────────────────────────────────────────────────
+
+  /// A training day dropped onto another training day. Confirm the scope, then
+  /// swap optimistically with a toast + Undo.
+  Future<void> _onDaySwap(WeekDayV2 from, WeekDayV2 to) async {
+    if (from.date == to.date) return;
+    Haptics.selection();
+    final scope = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _MoveSheet(from: from, to: to),
+    );
+    if (scope == null || !mounted) return; // "Leave it where it was"
+    await _applySwap(from.date, to.date, scope, announce: true);
+  }
+
+  Future<void> _applySwap(DateTime a, DateTime b, String scope,
+      {required bool announce}) async {
+    _swapLabelsLocally(a, b);
+    try {
+      await SupabaseService.instance.swapScheduledDays(a, b, scope);
+      Haptics.success();
+      if (announce) _showSwapToast(a, b, scope);
+    } catch (e) {
+      Haptics.error();
+      _snack("Couldn't move that — putting it back.");
+      _load(); // reconcile against the server
+    }
+  }
+
+  void _swapLabelsLocally(DateTime a, DateTime b) {
+    final plan = _plan;
+    if (plan == null) return;
+    final week = [
+      for (final d in plan.week)
+        _sameDate(d.date, a)
+            ? d.copyWith(label: _labelOn(plan.week, b))
+            : _sameDate(d.date, b)
+                ? d.copyWith(label: _labelOn(plan.week, a))
+                : d,
+    ];
+    setState(() => _plan = plan.copyWith(week: week));
+  }
+
+  static String? _labelOn(List<WeekDayV2> week, DateTime d) =>
+      week.firstWhere((w) => _sameDate(w.date, d)).label;
+
+  static bool _sameDate(DateTime x, DateTime y) =>
+      x.year == y.year && x.month == y.month && x.day == y.day;
+
+  void _showSwapToast(DateTime a, DateTime b, String scope) {
+    if (!mounted) return;
+    final scopeLabel = scope == 'forever' ? 'every week' : 'this week';
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('Days swapped ($scopeLabel).'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => _applySwap(b, a, scope, announce: false),
+        ),
+      ));
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -173,7 +241,7 @@ class _TrainTabState extends State<TrainTab> {
               children: [
                 _Header(plan: plan, summary: _summary),
                 const SizedBox(height: 16),
-                _WeekCalendar(week: plan.week),
+                _WeekCalendar(week: plan.week, onSwap: _onDaySwap),
                 const SizedBox(height: 16),
                 if (_summary != null)
                   ..._afterState(plan, _summary!)
@@ -306,7 +374,17 @@ class _Header extends StatelessWidget {
 /// (planned today, not yet trained), upcoming (planned, dashed), rest (flat).
 class _WeekCalendar extends StatelessWidget {
   final List<WeekDayV2> week;
-  const _WeekCalendar({required this.week});
+  final Future<void> Function(WeekDayV2 from, WeekDayV2 to) onSwap;
+  const _WeekCalendar({required this.week, required this.onSwap});
+
+  /// A day whose label can be dragged/received: a training day that is today or
+  /// later (past days are history and stay put).
+  static bool _swappable(WeekDayV2 d) {
+    if (d.label == null || d.label!.isEmpty) return false;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    return !DateTime(d.date.year, d.date.month, d.date.day).isBefore(today);
+  }
 
   static bool _isPast(DateTime d) {
     final now = DateTime.now();
@@ -367,9 +445,23 @@ class _WeekCalendar extends StatelessWidget {
           Row(
             children: [
               for (final d in week) ...[
-                Expanded(child: _DayCell(day: d, isPast: _isPast(d.date), tag: _tag(d.label))),
+                Expanded(
+                  child: _swappable(d)
+                      ? _DraggableDay(day: d, tag: _tag(d.label), onSwap: onSwap)
+                      : _DayCell(day: d, isPast: _isPast(d.date), tag: _tag(d.label)),
+                ),
                 if (d != week.last) const SizedBox(width: 4),
               ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Icon(Icons.drag_indicator_rounded, size: 11, color: AppColors.textFaint),
+              const SizedBox(width: 4),
+              Text('Hold a day to rearrange your split',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily, fontSize: 9.5, color: AppColors.textFaint)),
             ],
           ),
         ],
@@ -502,6 +594,186 @@ class _DayCell extends StatelessWidget {
                   color: tagFg)),
         ),
       ],
+    );
+  }
+}
+
+/// A training day whose label can be dragged onto another training day to
+/// rearrange the split. Both a drag source and a drop target.
+class _DraggableDay extends StatelessWidget {
+  final WeekDayV2 day;
+  final String tag;
+  final Future<void> Function(WeekDayV2 from, WeekDayV2 to) onSwap;
+  const _DraggableDay({required this.day, required this.tag, required this.onSwap});
+
+  static bool _same(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  @override
+  Widget build(BuildContext context) {
+    final cell = _DayCell(day: day, isPast: false, tag: tag);
+    return DragTarget<WeekDayV2>(
+      onWillAcceptWithDetails: (d) => !_same(d.data.date, day.date),
+      onAcceptWithDetails: (d) => onSwap(d.data, day),
+      builder: (context, candidate, rejected) {
+        final hovering = candidate.isNotEmpty;
+        return LongPressDraggable<WeekDayV2>(
+          data: day,
+          onDragStarted: Haptics.selection,
+          feedback: Material(
+            color: Colors.transparent,
+            child: SizedBox(width: 46, child: _DayCell(day: day, isPast: false, tag: tag)),
+          ),
+          childWhenDragging: Opacity(opacity: 0.25, child: cell),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(
+                color: hovering ? AppColors.accent : Colors.transparent,
+                width: 1.5,
+              ),
+            ),
+            child: cell,
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Confirmation for a day swap: the before → after, then the scope. Pops
+/// 'week' / 'forever', or null for "leave it".
+class _MoveSheet extends StatelessWidget {
+  final WeekDayV2 from;
+  final WeekDayV2 to;
+  const _MoveSheet({required this.from, required this.to});
+
+  static const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  String _dayName(WeekDayV2 d) => '${_wd[(d.dow - 1).clamp(0, 6)]} ${d.date.day}';
+
+  @override
+  Widget build(BuildContext context) {
+    final fromTag = _WeekCalendar._tag(from.label);
+    final toTag = _WeekCalendar._tag(to.label);
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceRaised,
+        border: Border(top: BorderSide(color: AppColors.border)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      padding: EdgeInsets.fromLTRB(20, 10, 20, 20 + MediaQuery.of(context).padding.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 38,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: AppColors.borderStrong, borderRadius: BorderRadius.circular(3)),
+            ),
+          ),
+          Text('Swap $fromTag and $toTag',
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  color: AppColors.textPrimary)),
+          const SizedBox(height: 14),
+          _row('Now', _dayName(from), fromTag, _dayName(to), toTag),
+          const SizedBox(height: 6),
+          const Center(
+              child: Icon(Icons.south_rounded, size: 16, color: AppColors.textMuted)),
+          const SizedBox(height: 6),
+          _row('After', _dayName(from), toTag, _dayName(to), fromTag, accent: true),
+          const SizedBox(height: 18),
+          _primary(context, 'Just this week', 'week'),
+          const SizedBox(height: 10),
+          _primary(context, 'Every week from now', 'forever', outline: true),
+          const SizedBox(height: 12),
+          Center(
+            child: GestureDetector(
+              onTap: () => Navigator.of(context).pop(),
+              child: const Text('Leave it where it was',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 11.5,
+                      color: AppColors.textMuted)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(String lead, String d1, String t1, String d2, String t2,
+      {bool accent = false}) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 44,
+          child: Text(lead,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
+        ),
+        Expanded(child: _chip(d1, t1, accent)),
+        const SizedBox(width: 8),
+        Expanded(child: _chip(d2, t2, accent)),
+      ],
+    );
+  }
+
+  Widget _chip(String day, String tag, bool accent) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: accent ? AppColors.accent.withValues(alpha: 0.1) : AppColors.surface,
+        border: Border.all(color: accent ? AppColors.accent : AppColors.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(day,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
+          Text(tag,
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 11,
+                  color: accent ? AppColors.accent : AppColors.textPrimary)),
+        ],
+      ),
+    );
+  }
+
+  Widget _primary(BuildContext context, String label, String scope,
+      {bool outline = false}) {
+    return SizedBox(
+      width: double.infinity,
+      child: GestureDetector(
+        onTap: () => Navigator.of(context).pop(scope),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: outline ? Colors.transparent : AppColors.accent,
+            border: outline ? Border.all(color: AppColors.border) : null,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: outline ? AppColors.textPrimary : AppColors.onAccent)),
+        ),
+      ),
     );
   }
 }

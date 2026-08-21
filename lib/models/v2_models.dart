@@ -120,6 +120,19 @@ class TrainScreenV2 {
     required this.upcoming,
   });
 
+  TrainScreenV2 copyWith({List<WeekDayV2>? week}) => TrainScreenV2(
+        today: today,
+        isRest: isRest,
+        label: label,
+        sessionId: sessionId,
+        sessionStatus: sessionStatus,
+        startedAt: startedAt,
+        paused: paused,
+        exercises: exercises,
+        week: week ?? this.week,
+        upcoming: upcoming,
+      );
+
   factory TrainScreenV2.fromJson(Map<String, dynamic> j) => TrainScreenV2(
         today: DateTime.parse(j['today'] as String),
         isRest: j['is_rest'] as bool? ?? false,
@@ -168,6 +181,15 @@ class WeekDayV2 {
         trained: j['trained'] as bool? ?? false,
         isToday: j['is_today'] as bool? ?? false,
         label: j['label'] as String?,
+      );
+
+  WeekDayV2 copyWith({String? label}) => WeekDayV2(
+        date: date,
+        dow: dow,
+        planned: planned,
+        trained: trained,
+        isToday: isToday,
+        label: label ?? this.label,
       );
 }
 
