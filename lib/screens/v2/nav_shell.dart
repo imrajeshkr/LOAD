@@ -77,8 +77,16 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
     } catch (_) {/* a missing badge is harmless */}
   }
 
+  static const _trainIndex = 0;
+
   void _onTab(int i) {
     if (i != _index) Haptics.selection();
+    // Leaving Train dismisses the post-session "next time these go up" card
+    // for the rest of the day (it shows right after finishing, then gets out
+    // of the way).
+    if (_index == _trainIndex && i != _trainIndex) {
+      trainProgressionDismissedOn = DateTime.now();
+    }
     setState(() {
       _index = i;
       // Opening the Trainer tab reads the thread, so drop the badge at once.

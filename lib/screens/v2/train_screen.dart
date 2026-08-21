@@ -11,6 +11,16 @@ import '../../theme/app_theme.dart';
 import '../../widgets/v2_widgets.dart';
 import 'session_flow_screen.dart';
 
+/// The calendar day the user last left the Train tab on. The post-session
+/// "next time these go up" card shows right after finishing and stays until
+/// the user navigates away from Train once, then hides for the rest of the day
+/// (set by [NavShell] on tab-away). Resets on app restart — acceptable, the
+/// card just reappears once more that day.
+DateTime? trainProgressionDismissedOn;
+
+bool _sameDay(DateTime? a, DateTime b) =>
+    a != null && a.year == b.year && a.month == b.month && a.day == b.day;
+
 /// The real Train tab. Three faces off one payload:
 ///   • training day, not done → plan + morning note + Start (before-state)
 ///   • rest day              → rest card + what's next
@@ -242,7 +252,8 @@ class _TrainTabState extends State<TrainTab> {
           const SizedBox(height: 16),
           _PbCard(pb: pb),
         ],
-        if (_progressions.any((p) => p.reason != 'no_history')) ...[
+        if (!_sameDay(trainProgressionDismissedOn, plan.today) &&
+            _progressions.any((p) => p.reason != 'no_history')) ...[
           const SizedBox(height: 16),
           _ProgressionCard(
               rows: _progressions.where((p) => p.reason != 'no_history').toList()),
