@@ -33,6 +33,8 @@ class _ProfileTabState extends State<ProfileTab> {
   late List<GoalV2> _goals;
   late List<int> _weekdays; // ISO 1..7
   late String _split; // split_preference
+  String? _experience;
+  String? _environment;
   double? _target;
   late List<_WorkingFlag> _flags;
   String _painNote = '';
@@ -79,6 +81,8 @@ class _ProfileTabState extends State<ProfileTab> {
         _goals = [...data.goals];
         _weekdays = [...data.trainingWeekdays];
         _split = data.splitPreference;
+        _experience = data.experience;
+        _environment = data.environment;
         _slots = data.weekdaySlots;
         _target = data.targetWeightKg;
         _flags = [...flags];
@@ -561,6 +565,20 @@ class _ProfileTabState extends State<ProfileTab> {
             value: _goals.isEmpty ? "Coach's call" : _goals.map((g) => g.label).join(' · '),
             dirty: false,
             onTap: _openGoalSheet,
+          ),
+          _PlanRow(
+            icon: Icons.timeline_outlined,
+            label: 'Training age',
+            value: _experienceDisplay(_experience),
+            dirty: false,
+            onTap: _openExperienceSheet,
+          ),
+          _PlanRow(
+            icon: Icons.place_outlined,
+            label: 'Where you train',
+            value: _environmentDisplay(_environment),
+            dirty: false,
+            onTap: _openEnvironmentSheet,
           ),
           _PlanRow(
             icon: Icons.monitor_weight_outlined,
@@ -1164,6 +1182,86 @@ class _ProfileTabState extends State<ProfileTab> {
     if (!applied && mounted) setState(() => _goals = [...snapshot]);
   }
 
+  Future<void> _openExperienceSheet() async {
+    const options = [
+      ('Under 6 months', 'beginner'),
+      ('6 months to 2 years', 'intermediate'),
+      ('Over 2 years', 'advanced'),
+    ];
+    final snapshot = _experience;
+    var applied = false;
+    await _sheet(
+      title: 'How long have you trained?',
+      sub: 'Sets how fast weight climbs and how much work I plan for you.',
+      body: StatefulBuilder(
+        builder: (ctx, setSheet) => Column(
+          children: [
+            for (final (label, value) in options)
+              _selectRow(
+                label: label,
+                selected: _experience == value,
+                leads: false,
+                onTap: () => setSheet(() => setState(() => _experience = value)),
+              ),
+            const SizedBox(height: 20),
+            _sheetPrimary('Save', () async {
+              Navigator.of(ctx).pop();
+              applied = true;
+              final ok = await _rebuild(
+                title: 'Rebuild for your training age?',
+                effect: 'Changes how much work I plan and how quickly weight climbs. Every logged set is kept.',
+                apply: () => SupabaseService.instance
+                    .updatePlanProfile({'experience': _experience}),
+              );
+              if (!ok && mounted) setState(() => _experience = snapshot);
+            }),
+          ],
+        ),
+      ),
+    );
+    if (!applied && mounted) setState(() => _experience = snapshot);
+  }
+
+  Future<void> _openEnvironmentSheet() async {
+    const options = [
+      ('Commercial gym', 'commercial_gym'),
+      ('Home gym', 'home_gym'),
+      ('No equipment', 'bodyweight_only'),
+    ];
+    final snapshot = _environment;
+    var applied = false;
+    await _sheet(
+      title: 'Where do you train?',
+      sub: 'I only program equipment you can actually reach.',
+      body: StatefulBuilder(
+        builder: (ctx, setSheet) => Column(
+          children: [
+            for (final (label, value) in options)
+              _selectRow(
+                label: label,
+                selected: _environment == value,
+                leads: false,
+                onTap: () => setSheet(() => setState(() => _environment = value)),
+              ),
+            const SizedBox(height: 20),
+            _sheetPrimary('Save', () async {
+              Navigator.of(ctx).pop();
+              applied = true;
+              final ok = await _rebuild(
+                title: 'Rebuild for your gym?',
+                effect: 'Exercises you cannot do here are swapped for ones you can. Every logged set is kept.',
+                apply: () => SupabaseService.instance
+                    .updatePlanProfile({'environment': _environment}),
+              );
+              if (!ok && mounted) setState(() => _environment = snapshot);
+            }),
+          ],
+        ),
+      ),
+    );
+    if (!applied && mounted) setState(() => _environment = snapshot);
+  }
+
   Future<void> _openTargetSheet() async {
     final bw = _data!.latestWeightKg ?? _target ?? 80;
     final snapshot = _target;
@@ -1650,6 +1748,20 @@ class _ProfileTabState extends State<ProfileTab> {
         'upper_lower' => 'Upper / Lower',
         'full_body' => 'Full body',
         _ => "Coach's call",
+      };
+
+  String _experienceDisplay(String? e) => switch (e) {
+        'beginner' => 'Under 6 months',
+        'intermediate' => '6 months to 2 years',
+        'advanced' => 'Over 2 years',
+        _ => 'Not set',
+      };
+
+  String _environmentDisplay(String? v) => switch (v) {
+        'commercial_gym' => 'Commercial gym',
+        'home_gym' => 'Home gym',
+        'bodyweight_only' => 'No equipment',
+        _ => 'Not set',
       };
 
   static String _n(double v) =>

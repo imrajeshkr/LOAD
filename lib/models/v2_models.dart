@@ -899,6 +899,8 @@ class ProfileDataV2 {
   final List<int> trainingWeekdays; // ISO 1=Mon..7=Sun
   /// Chosen split: push_pull_legs | upper_lower | full_body | no_preference.
   final String splitPreference;
+  final String? experience;   // beginner | intermediate | advanced
+  final String? environment;  // commercial_gym | home_gym | bodyweight_only
   /// Weekday (ISO 1=Mon..7=Sun) → the session label the plan puts there
   /// ("Push day", "Upper body", …). Empty on rest weekdays / older payloads.
   final Map<int, String> weekdaySlots;
@@ -921,6 +923,8 @@ class ProfileDataV2 {
     required this.targetDirection,
     required this.trainingWeekdays,
     this.splitPreference = 'no_preference',
+    this.experience,
+    this.environment,
     this.weekdaySlots = const {},
     required this.barWeightKg,
     required this.plateSizes,
