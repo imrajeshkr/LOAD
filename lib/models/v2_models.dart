@@ -1014,6 +1014,12 @@ class OnboardingDraft {
   final double? targetWeightKg;
   final List<int> weekdaysIso; // 1..7
   final String splitPreference; // full_body | upper_lower | push_pull_legs
+  /// beginner | intermediate | advanced — gates exercise difficulty, volume
+  /// ceiling, start loads and progression rate.
+  final String experience;
+  /// commercial_gym | home_gym | bodyweight_only — gates which equipment the
+  /// generator may select.
+  final String environment;
   final double barWeightKg;
   final bool hasBenched;
   final double? benchStartKg; // calibrated total, null when never benched
@@ -1029,6 +1035,8 @@ class OnboardingDraft {
     required this.targetWeightKg,
     required this.weekdaysIso,
     required this.splitPreference,
+    this.experience = 'intermediate',
+    this.environment = 'commercial_gym',
     required this.barWeightKg,
     required this.hasBenched,
     required this.benchStartKg,

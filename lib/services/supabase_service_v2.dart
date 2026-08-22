@@ -917,6 +917,8 @@ extension SupabaseServiceV2 on SupabaseService {
       'training_weekdays': d.weekdaysIso,
       'days_per_week': d.weekdaysIso.isEmpty ? 3 : d.weekdaysIso.length,
       'split_preference': d.splitPreference,
+      'experience': d.experience,
+      'environment': d.environment,
       'bar_weight_kg': d.barWeightKg,
       'has_benched': d.hasBenched,
     });
