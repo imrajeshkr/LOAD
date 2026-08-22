@@ -543,3 +543,20 @@ The reward for using the pause feature is that we never ask — which is a real 
 
 - **Guide illustration pipeline.** §13.3 keeps illustrations for Core, but there's no process for producing new ones as exercises get promoted. Commission, generate, or accept photos indefinitely?
 - **Volume-table tuning.** The numbers in §6 are defensible starting points, not measured. Once Progress has real per-muscle data across users, they should be revisited.
+
+### Known limitation shipped in Phase 0 — Plan 03 must close it
+
+Phase 0 (migration `v2_0021`, applied) fixed **pattern-level** completeness: every split now trains push, pull and legs. It did **not** fix **muscle-level** completeness, and the gap is deterministic rather than occasional.
+
+On a multi-pattern day more muscles compete than there are slots — an Upper day has 8 primary muscles for 6 slots. Selection still orders by `default_rep_low, slug` (inherited from the one-pattern-per-day era, where 4 muscles always fit 4 slots and nothing was ever discarded). Small muscles carry the highest rep ranges, so they lose every time. Verified against the live catalog:
+
+| Split · day | Muscles vs slots | Dropped every time |
+|---|---|---|
+| `upper_lower` · Upper | 8 vs 6 | Side Delt (`lateral-raise`, rep_low 12), Rear Delt (`face-pull`, rep_low 15) |
+| `full_body` · A (push,legs) | 8 vs 6 | Side Delt, Calves |
+| `full_body` · B (pull,legs) | 8 vs 6 | Rear Delt, Calves |
+| `push_pull_legs` · any | 4 vs 4 | none — nothing is ever discarded |
+
+This was left in place deliberately. It is a strict improvement on what it replaced (`upper_lower` previously had *no* pull work at all), and the two cheap fixes are both wrong: reordering would change the *ordinal*, which drives `sets_target` and `rest_seconds`, silently rewriting every existing PPL user's prescription; and raising the slot cap to 8 contradicts §6's 4–6 session-length cap.
+
+**Plan 03 closes it by construction.** Once selection is driven by a weekly per-muscle set budget (§6.1–6.3) rather than a per-session slot race, a muscle earns its sets across the week instead of competing for a seat in one session. Treat "side delt, rear delt and calves receive their weekly volume target under every split" as an acceptance criterion for Plan 03.
