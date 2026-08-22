@@ -1,6 +1,6 @@
 # Exercise Plan Builder — Design
 
-**Date:** 2026-08-23 · **Status:** design, not yet approved · **Scope:** catalog, generation, progression, swap, onboarding intake
+**Date:** 2026-08-23 · **Status:** design, not yet approved · **Scope:** catalog, generation, progression, transitions, swap, onboarding intake
 
 ---
 
@@ -251,7 +251,108 @@ Beginners adapt session-to-session and should be loaded that way; advanced lifte
 
 ---
 
-## 8. Exercise swap
+## 8. Transitions — how a user moves between states
+
+Everything above describes a *snapshot*: given a user's state, build a plan. This section covers the part that actually decides whether the app is any good a year in — **how state changes over time**, and what happens to the plan when it does.
+
+Two independent kinds of transition:
+
+- **Level transition** — beginner → intermediate → advanced. The app proposes it; the user accepts.
+- **Shape transition** — N days → M days, PPL → Upper/Lower → Full body. The user initiates it.
+
+### 8.1 Level transition is earned, not timed
+
+Training age is not calendar time. The honest definition is **which progression scheme still works**:
+
+| Level | Definition | Progression that still works |
+|---|---|---|
+| Beginner | Can add weight almost every session | Linear, per session |
+| Intermediate | Needs a week to add weight | Double progression, per week |
+| Advanced | Needs multi-week blocks to add weight | Blocks with planned deloads |
+
+That makes the detector fall out for free: **a beginner graduates when linear progression stops paying.** We already compute exactly that in `lift_status(...)`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Beginner
+    Beginner --> Intermediate: auto-proposed
+    Intermediate --> Advanced: proposed, needs intent
+    Intermediate --> Returning: 6+ weeks untrained
+    Advanced --> Returning: 6+ weeks untrained
+    Returning --> Intermediate: ramp complete
+    Returning --> Advanced: ramp complete
+```
+
+**Beginner → Intermediate.** All three must hold, so one bad fortnight can't promote anyone:
+
+1. ≥2 main compound lifts return `stalled` from `lift_status`, **and**
+2. ≥8 weeks of logged training, **and**
+3. the stall survived one deload — proving it's adaptation, not fatigue.
+
+**Intermediate → Advanced.** Deliberately *not* automatic. Signals worth surfacing (≥18 months consistent, main lifts gaining < ~1 kg/month, strength standards relative to bodyweight), but advanced means opting into more volume and scheduled deloads. That needs intent, so we suggest and let the user confirm.
+
+**No automatic demotion.** A long layoff doesn't make someone a beginner again — it makes them a trained person who is detrained. That's the `Returning` state: keep the level, re-ramp volume and loads (§8.3), exit the ramp back to where they were.
+
+### 8.2 A transition is a proposal, never an ambush
+
+Silently rebuilding someone's plan because a threshold tripped is the wrong behaviour. Transitions arrive through the coach channel that already exists:
+
+> Your squat has sat at 80 kg for three sessions and bench for four. That isn't failure — it's beginner progression finishing its job. Want me to move you up? More weekly volume, and weight climbs across the week instead of every session.
+
+Accept → transition. Decline → snooze and re-evaluate in 4 weeks.
+
+On accept we **close the current `training_profiles` row (`valid_to = today`) and insert a new one** — using the versioning that's been sitting unused. That gives a real audit trail of the user's journey for free, and lets Progress eventually show "you became an intermediate lifter in March."
+
+### 8.3 Shape transitions — N days → M days, split → split
+
+Today `generateProgram()` archives the old program and builds a new one from scratch. Three things go wrong, and all three are invisible to the user.
+
+```mermaid
+flowchart TD
+  T[shape change requested] --> D{how big?}
+  D -->|days ±1, same split| MINOR[rebuild, keep lifts]
+  D -->|split change, or days +2 or more| MAJOR[rebuild + ramp + optional deload]
+  MINOR --> C[continuity pass]
+  MAJOR --> C
+  C --> R[volume ramp<br/>if new volume > old + 30%]
+  R --> DIFF[show kept / added / dropped]
+  DIFF --> OUT[(new program)]
+```
+
+**1 · Continuity — keep the lifts you're mid-progress on.** Selection gains a `+continuity` score term: an exercise the user has logged recently, which still fits the new plan's muscle budget and filters, keeps its slot **and its working load**. Only genuinely new slots start from catalog defaults. Loads already survive via the history lookup; what's missing is *slot* stability.
+
+**2 · Volume ramp — never double someone's week overnight.** Going 3 → 6 days roughly doubles weekly sets, which is how people get hurt. If new weekly volume exceeds old by more than 30%:
+
+| Week | Volume |
+|---|---|
+| 1 | old + 50% of the increase |
+| 2 | full target |
+
+Implemented as a `ramp_factor` applied at `train_screen()` time, derived from days since the program started — **no schema change, and it self-expires.**
+
+**3 · Deload on structural change.** A split change or +2 days is a natural moment for one light week. Reuses the Phase 4 deload mechanic rather than inventing a second one.
+
+**4 · Show the diff.** The rebuild confirm I shipped this week says only "new sessions and exercises." It should say what actually happens: **kept** Bench, Squat, Row · **added** Incline press, Leg curl · **dropped** Cable fly. This is the single cheapest trust win in the whole design.
+
+**5 · Mid-week changes.** Already forward-only, which is right — past days are history. The current week ends up hybrid, and that's fine: the ramp counts from the transition date, and the week's remaining days run the new plan at ramp week 1.
+
+### 8.4 Program lifecycle — the deeper gap
+
+A program today runs **forever**; only loads move. That's correct for a beginner (linear progression *is* the program) and wrong for everyone else — real training runs in blocks, then changes.
+
+`programs.ends_on` exists and is unused. Proposal:
+
+| Level | Block length | What happens at the end |
+|---|---|---|
+| Beginner | none | Runs until linear progression stalls — that stall *is* the block boundary, and it triggers §8.1 |
+| Intermediate | 6 weeks | Deload week, then regenerate: keep main lifts, vary 1–2 accessories |
+| Advanced | 4 weeks | Volume wave + planned deload, then regenerate |
+
+This is the honest answer to "how does the plan change over time," and load progression alone is not that answer. It's the largest single piece of remaining work, so it lands last (Phase 6) — but it needs naming now, because the level model in §8.1 only makes sense if blocks eventually exist.
+
+---
+
+## 9. Exercise swap
 
 "Sure could swap the exercise if they want to do a different one for the same muscle."
 
@@ -262,7 +363,7 @@ Beginners adapt session-to-session and should be loaded that way; advanced lifte
 
 ---
 
-## 9. Onboarding changes
+## 10. Onboarding changes
 
 Current steps: `goal · body · days · bar · map · review`.
 
@@ -274,7 +375,7 @@ Two new taps, both single-select. Existing users default to `intermediate` + `co
 
 ---
 
-## 10. Data model changes
+## 11. Data model changes
 
 ```sql
 -- exercises
@@ -307,7 +408,7 @@ CREATE TABLE volume_targets (
 
 ---
 
-## 11. Rollout
+## 12. Rollout
 
 | Phase | Ships | Risk |
 |---|---|---|
@@ -315,17 +416,25 @@ CREATE TABLE volume_targets (
 | **1 — intake** | Add experience + environment to onboarding, backfill existing users | Low |
 | **2 — catalog** | Import 619, enrich ~150 Core, keep 40 existing as Core | Medium; enrichment is the real cost |
 | **3 — generator** | Volume-driven generation, goal-aware prescription | High; regenerates everyone's plan |
+| **3.5 — shape transitions** | Continuity pass, volume ramp, kept/added/dropped diff (§8.3) | Medium; ships with Phase 3 or immediately after |
 | **4 — progression** | Experience-tuned progression + deload | Medium |
 | **5 — swap** | Swap UI + override persistence | Low |
+| **6 — level transitions** | Promotion detector, coach proposal, `training_profiles` versioning (§8.1–8.2) | Medium; needs Phase 4's deload to exist first |
+| **7 — program lifecycle** | Blocks, planned deloads, `programs.ends_on` (§8.4) | High; the long game |
 
 Phase 0 is worth doing immediately and independently — it's a live bug behind a one-tap control.
 
+**Ordering constraint:** Phase 6 depends on Phase 4, because "the stall survived a deload" is part of the promotion test and deload doesn't exist yet. Phase 3.5 should not lag Phase 3 by much — Phase 3 is precisely when everyone's plan gets rebuilt, so that's the moment continuity and the ramp matter most.
+
 ---
 
-## 12. Open questions
+## 13. Open questions
 
 1. **Regeneration on rollout.** Phase 3 changes every plan. Auto-regenerate, or prompt each user ("your plan can be rebuilt with what we now know")? Prompting is safer but leaves users on the old logic.
 2. **Core set membership.** Who picks the ~150? I can propose a list from muscle × equipment coverage for review.
 3. **Images.** Mirror the dataset's 1,700 images to our bucket, or hot-link GitHub? Mirroring costs storage; hot-linking risks the repo moving.
 4. **`general_health` goal** currently has no distinct training meaning — is it a real goal or a "no strong preference" signal?
 5. **Deload** doesn't exist anywhere in the app yet — Phase 4 introduces the concept to the user, which needs UI language.
+6. **Promotion cadence.** How often do we test for a level transition — nightly, or on session finish? And how often may we re-ask after a decline (§8.2 assumes 4 weeks)?
+7. **Do we ever tell a user they're advanced?** §8.1 makes intermediate → advanced user-confirmed. Alternative: drop the advanced tier from the UI entirely and treat it as an internal parameter set, so nobody self-selects into more volume than they can recover from.
+8. **Returning-user threshold.** §8.1 uses 6 weeks untrained. The app already has an explicit "pause training" feature — should a *declared* pause behave differently from silently disappearing for 6 weeks?
