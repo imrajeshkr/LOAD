@@ -6,6 +6,7 @@ import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/pressable.dart';
 import '../../widgets/v2_widgets.dart';
 
 /// Phase 1 — the in-session flow. One lift per screen: guide, adjustable set
@@ -155,6 +156,7 @@ class _RailItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final e = c.exercises[exIdx];
     final state = c.liftState(exIdx);
+    final skipped = state == LiftState.skipped;
     final isCurrent = exIdx == c.idx;
     final logged = c.setsLogged(exIdx);
 
@@ -165,14 +167,16 @@ class _RailItem extends StatelessWidget {
     };
     final Color nameColor = isCurrent
         ? AppColors.accent
-        : state == LiftState.done
-            ? AppColors.textMuted
-            : AppColors.textFaint;
+        : skipped
+            ? AppColors.textDim
+            : state == LiftState.done
+                ? AppColors.textMuted
+                : AppColors.textFaint;
 
-    return GestureDetector(
+    return Pressable(
       behavior: HitTestBehavior.opaque,
       onTap: () {
-        if (!isCurrent) {
+        if (!isCurrent && !skipped) {
           Haptics.selection();
           c.goTo(exIdx);
         }
@@ -182,12 +186,12 @@ class _RailItem extends StatelessWidget {
         children: [
           Row(
             children: [
-              if (state == LiftState.deferred)
+              if (state == LiftState.deferred || skipped)
                 Expanded(
                   child: Container(
                     height: 3,
                     decoration: BoxDecoration(
-                      color: AppColors.borderStrong,
+                      color: skipped ? AppColors.borderFaint : AppColors.borderStrong,
                       borderRadius: BorderRadius.circular(2),
                     ),
                   ),
@@ -214,6 +218,11 @@ class _RailItem extends StatelessWidget {
                   padding: EdgeInsets.only(right: 3),
                   child: Icon(Icons.schedule_rounded, size: 8, color: AppColors.textMuted),
                 ),
+              if (skipped)
+                const Padding(
+                  padding: EdgeInsets.only(right: 3),
+                  child: Icon(Icons.block_rounded, size: 8, color: AppColors.textDim),
+                ),
               Flexible(
                 child: Text(e.name.toUpperCase(),
                     maxLines: 1,
@@ -223,6 +232,8 @@ class _RailItem extends StatelessWidget {
                         fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
                         fontSize: 8.5,
                         letterSpacing: 0.4,
+                        decoration: skipped ? TextDecoration.lineThrough : null,
+                        decorationColor: AppColors.textDim,
                         color: nameColor)),
               ),
             ],
@@ -361,19 +372,21 @@ class _BoardRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final e = c.exercises[exIdx];
     final state = c.liftState(exIdx);
+    final skipped = state == LiftState.skipped;
     final isCurrent = exIdx == c.idx;
     final (meta, dotColor) = switch (state) {
       LiftState.done => ('done · ${c.setsLogged(exIdx)} sets', AppColors.accent),
       LiftState.inProgress =>
         ('${c.setsLogged(exIdx)} of ${c.target(exIdx)} sets', AppColors.warn),
       LiftState.deferred => ('saved for the end', AppColors.textMuted),
+      LiftState.skipped => ('skipped · tap to restore', AppColors.textDim),
       LiftState.untouched => ('not started', AppColors.textFaint),
     };
     return Padding(
       key: key,
       padding: const EdgeInsets.only(bottom: 8),
-      child: GestureDetector(
-        onTap: onJump,
+      child: Pressable(
+        onTap: skipped ? () => c.restoreLift(exIdx) : onJump,
         behavior: HitTestBehavior.opaque,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -400,7 +413,9 @@ class _BoardRow extends StatelessWidget {
                             fontFamily: AppTheme.fontFamily,
                             fontWeight: FontWeight.w500,
                             fontSize: 13.5,
-                            color: AppColors.textPrimary)),
+                            decoration: skipped ? TextDecoration.lineThrough : null,
+                            decorationColor: AppColors.textDim,
+                            color: skipped ? AppColors.textMuted : AppColors.textPrimary)),
                     const SizedBox(height: 1),
                     Text(meta,
                         style: const TextStyle(
@@ -410,13 +425,19 @@ class _BoardRow extends StatelessWidget {
                   ],
                 ),
               ),
-              ReorderableDragStartListener(
-                index: pos,
-                child: const Padding(
+              if (skipped)
+                const Padding(
                   padding: EdgeInsets.only(left: 8),
-                  child: Icon(Icons.drag_indicator_rounded, size: 18, color: AppColors.textFaint),
+                  child: Icon(Icons.restore_rounded, size: 18, color: AppColors.accent),
+                )
+              else
+                ReorderableDragStartListener(
+                  index: pos,
+                  child: const Padding(
+                    padding: EdgeInsets.only(left: 8),
+                    child: Icon(Icons.drag_indicator_rounded, size: 18, color: AppColors.textFaint),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -494,7 +515,7 @@ class _GuideMedia extends StatelessWidget {
             Positioned(
               bottom: 10,
               right: 10,
-              child: GestureDetector(
+              child: Pressable(
                 onTap: onToggle,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -597,7 +618,7 @@ class _SetTable extends StatelessWidget {
               Text('Target ${e.prescription}',
                   style: const TextStyle(
                       fontFamily: AppTheme.fontFamily, fontSize: 10, color: AppColors.inactiveFill)),
-              GestureDetector(
+              Pressable(
                 onTap: c.addSet,
                 child: const Text('+ add a set',
                     style: TextStyle(
@@ -723,7 +744,7 @@ class _SetChip extends StatelessWidget {
                   style: const TextStyle(
                       fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textDim)),
             ),
-          GestureDetector(
+          Pressable(
             onTap: () => c.removeSet(n),
             child: const SizedBox(
               width: 30,
@@ -764,7 +785,7 @@ class _Stepper extends StatelessWidget {
     );
   }
 
-  Widget _round(IconData icon, VoidCallback onTap) => GestureDetector(
+  Widget _round(IconData icon, VoidCallback onTap) => Pressable(
         onTap: onTap,
         child: Container(
           width: 30,
@@ -805,7 +826,7 @@ class _FeelCard extends StatelessWidget {
                   color: AppColors.textPrimary)),
           const SizedBox(height: 12),
           for (final o in _opts) ...[
-            GestureDetector(
+            Pressable(
               onTap: () => c.setEffort(o.$1),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
@@ -923,9 +944,21 @@ class _BottomBar extends StatelessWidget {
         children: [
           if (c.resting) _RestBar(c: c),
           if (c.entry == null && c.sets.isEmpty)
-            _PrimaryBtn(
-              label: 'Start this lift',
-              onTap: c.startLive,
+            Column(
+              children: [
+                _PrimaryBtn(
+                  label: 'Start this lift',
+                  onTap: c.startLive,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(child: _SecondaryBtn(icon: Icons.block_rounded, label: 'Skip', onTap: c.skipLift)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _SecondaryBtn(icon: Icons.schedule_rounded, label: 'Log at the end', onTap: c.deferLift)),
+                  ],
+                ),
+              ],
             )
           else if (c.exDone)
             _PrimaryBtn(
@@ -1011,7 +1044,7 @@ class _RestBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          GestureDetector(
+          Pressable(
             onTap: c.addRest,
             child: Container(
               width: 40,
@@ -1023,7 +1056,7 @@ class _RestBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          GestureDetector(
+          Pressable(
             onTap: c.skipRest,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
@@ -1108,18 +1141,19 @@ class _ReviewScreenState extends State<_ReviewScreen> {
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
               children: [
                 for (var i = 0; i < c.exercises.length; i++)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: _ReviewRow(
-                      c: c,
-                      index: i,
-                      expanded: _expanded == i,
-                      ticked: !c.exerciseDeferred(i) || c.exerciseConfirmed(i) || _touched.contains(i),
-                      entryDelay: i,
-                      onTapAdjust: c.exerciseDeferred(i) ? () => _toggleExpand(i) : null,
-                      onSave: (rows) => _save(i, rows),
+                  if (!c.isSkipped(i))
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _ReviewRow(
+                        c: c,
+                        index: i,
+                        expanded: _expanded == i,
+                        ticked: !c.exerciseDeferred(i) || c.exerciseConfirmed(i) || _touched.contains(i),
+                        entryDelay: i,
+                        onTapAdjust: c.exerciseDeferred(i) ? () => _toggleExpand(i) : null,
+                        onSave: (rows) => _save(i, rows),
+                      ),
                     ),
-                  ),
               ],
             ),
           ),
@@ -1218,7 +1252,7 @@ class _ReviewRowState extends State<_ReviewRow> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          GestureDetector(
+          Pressable(
             behavior: HitTestBehavior.opaque,
             onTap: widget.onTapAdjust,
             child: Padding(
@@ -1452,7 +1486,7 @@ class _CircleBtn extends StatelessWidget {
   final VoidCallback onTap;
   const _CircleBtn({required this.icon, required this.onTap});
   @override
-  Widget build(BuildContext context) => GestureDetector(
+  Widget build(BuildContext context) => Pressable(
         onTap: onTap,
         child: Container(
           width: 34,
@@ -1469,7 +1503,8 @@ class _PrimaryBtn extends StatelessWidget {
   final VoidCallback onTap;
   const _PrimaryBtn({required this.label, required this.onTap});
   @override
-  Widget build(BuildContext context) => GestureDetector(
+  Widget build(BuildContext context) => Pressable(
+        haptic: PressFx.medium,
         onTap: onTap,
         child: Container(
           width: double.infinity,
@@ -1492,7 +1527,7 @@ class _SecondaryBtn extends StatelessWidget {
   final VoidCallback onTap;
   const _SecondaryBtn({required this.icon, required this.label, required this.onTap});
   @override
-  Widget build(BuildContext context) => GestureDetector(
+  Widget build(BuildContext context) => Pressable(
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 11),

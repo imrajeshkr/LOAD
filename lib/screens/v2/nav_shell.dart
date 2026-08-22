@@ -4,6 +4,7 @@ import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/pressable.dart';
 import 'train_screen.dart';
 import 'progress_screen.dart';
 import 'profile_screen.dart';
@@ -197,8 +198,9 @@ class _NavTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       flex: active ? 19 : 10,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
+      child: Pressable(
+        haptic: PressFx.none, // _onTab fires the selection haptic on change
+        scale: 0.97,
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),

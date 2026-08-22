@@ -4,6 +4,7 @@ import '../../models/v2_models.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
+import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
 
 /// The v2 intake: six steps done by doing (dials, plates, a body map), then a
@@ -90,7 +91,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
   int _build = 0;
   Timer? _buildTimer;
   String? _error;
-  String? _planTitle;
 
   @override
   void initState() {
@@ -222,18 +222,12 @@ class _OnboardingV2State extends State<OnboardingV2> {
       await SupabaseService.instance.submitOnboarding(draft);
       _buildTimer?.cancel();
       if (!mounted) return;
-      // Let the checklist finish visually, then reveal the plan.
+      // Let the checklist finish visually, then drop straight into the app —
+      // the Train tab already shows the plan and today's session.
       setState(() => _build = 4);
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
-      final splitLabel = _splitOptions
-          .firstWhere((o) => o.$2 == (_split ?? 'full_body'),
-              orElse: () => ('Full body', 'full_body', ''))
-          .$1;
-      setState(() {
-        _planTitle = '$splitLabel, $_dayCount days';
-        _screen = 'done';
-      });
+      widget.onFinished();
     } catch (e) {
       _buildTimer?.cancel();
       if (!mounted) return;
@@ -257,7 +251,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
           key: ValueKey(_screen),
           child: switch (_screen) {
             'building' => _buildingView(),
-            'done' => _doneView(),
             _ => _intakeView(),
           },
         ),
@@ -276,7 +269,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
               children: [
                 Row(
                   children: [
-                    GestureDetector(
+                    Pressable(
                       onTap: _back,
                       child: Container(
                         width: 30,
@@ -416,7 +409,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
                   const SizedBox(height: 12),
                 ],
                 if (_stepId == 'bar' && _benched) ...[
-                  GestureDetector(
+                  Pressable(
                     onTap: () => setState(() {
                       _benched = false;
                       _plates.clear();
@@ -446,7 +439,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
                 ),
                 if (_stepId == 'map' && _flags.isEmpty && _painCtrl.text.trim().isEmpty) ...[
                   const SizedBox(height: 12),
-                  GestureDetector(
+                  Pressable(
                     onTap: () => setState(() => _step += 1),
                     child: const Text('Nothing hurts — skip',
                         style: TextStyle(
@@ -514,7 +507,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
     final leads = sel && _goals.first == g;
     return Padding(
       padding: const EdgeInsets.only(bottom: 9),
-      child: GestureDetector(
+      child: Pressable(
         onTap: () => setState(() {
           _coachChoice = false;
           sel ? _goals.remove(g) : _goals.add(g);
@@ -569,7 +562,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
   }
 
   Widget _coachChoiceCard() {
-    return GestureDetector(
+    return Pressable(
       onTap: () => setState(() {
         _coachChoice = true;
         _goals.clear();
@@ -770,7 +763,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
           ],
           const SizedBox(height: 12),
           Center(
-            child: GestureDetector(
+            child: Pressable(
               onTap: () => setState(() => _targetMode = 'none'),
               child: Text(
                   _targetMode == 'none'
@@ -791,7 +784,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
   Widget _dirChip(String label, IconData icon, String mode) {
     final sel = _targetMode == mode;
     return Expanded(
-      child: GestureDetector(
+      child: Pressable(
         onTap: () => setState(() {
           _targetMode = mode;
           _target = mode == 'lose' ? _bw - 4 : mode == 'gain' ? _bw + 4 : _bw;
@@ -871,7 +864,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
   /// selected state pops 6% like the design.
   Widget _dayChip(String letter, int i) {
     final sel = _weekdays.contains(i + 1);
-    return GestureDetector(
+    return Pressable(
       onTap: () => setState(() {
         final iso = i + 1;
         sel ? _weekdays.remove(iso) : _weekdays.add(iso);
@@ -929,7 +922,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   Widget _splitCard(String label, String enumVal, String sub) {
     final sel = _split == enumVal;
-    return GestureDetector(
+    return Pressable(
       onTap: () => setState(() => _split = enumVal),
       child: Container(
         width: 150,
@@ -967,7 +960,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (!_benched) ...[
-          GestureDetector(
+          Pressable(
             onTap: () => setState(() => _benched = true),
             child: Container(
               padding: const EdgeInsets.all(16),
@@ -1033,7 +1026,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
               _smallRound(Icons.undo, () {
                 if (_plates.isNotEmpty) setState(() => _plates.removeLast());
               }),
-              GestureDetector(
+              Pressable(
                 onTap: () => setState(_plates.clear),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -1071,7 +1064,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
   Widget _barType(String sub, double kg) {
     final sel = _barKg == kg;
     return Expanded(
-      child: GestureDetector(
+      child: Pressable(
         onTap: () => setState(() => _barKg = kg),
         child: Container(
           padding: const EdgeInsets.fromLTRB(8, 13, 8, 11),
@@ -1283,7 +1276,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
   }
 
   Widget _plateAddBtn(double p) {
-    return GestureDetector(
+    return Pressable(
       onTap: () => setState(() => _plates.add(p)),
       child: Container(
         padding: const EdgeInsets.fromLTRB(9, 8, 13, 8),
@@ -1353,7 +1346,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
             runSpacing: 7,
             children: [
               for (final f in _flags)
-                GestureDetector(
+                Pressable(
                   onTap: () => setState(() => _flags.removeWhere((x) => x.key == f.key)),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -1407,7 +1400,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   Widget _viewTab(String label, String v) {
     final sel = _view == v;
-    return GestureDetector(
+    return Pressable(
       onTap: () => setState(() => _view = v),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
@@ -1486,7 +1479,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
               Positioned(
                 left: n.x - 16,
                 top: n.y - 16,
-                child: GestureDetector(
+                child: Pressable(
                   behavior: HitTestBehavior.opaque,
                   onTap: () => setState(() {
                     final key = '${n.j.id}|${n.side}';
@@ -1561,7 +1554,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
       runSpacing: 9,
       children: [
         for (final t in tiles)
-          GestureDetector(
+          Pressable(
             onTap: () => setState(() => _step = t.step),
             child: Container(
               width: t.span == 2 ? double.infinity : _halfTileWidth(context),
@@ -1667,95 +1660,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
     );
   }
 
-  // ── done ────────────────────────────────────────────────────────────────
-  Widget _doneView() {
-    final sorted = [..._weekdays]..sort();
-    const letters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(24, 18, 24, 40),
-        children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-                color: AppColors.accent, borderRadius: BorderRadius.circular(15)),
-            child: const Icon(Icons.check, size: 24, color: AppColors.onAccent),
-          ),
-          const SizedBox(height: 20),
-          Text(_planTitle ?? 'Your week is ready',
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 26,
-                  height: 1.15,
-                  letterSpacing: -0.26,
-                  color: AppColors.textPrimary)),
-          const SizedBox(height: 9),
-          const Text(
-              'Starting light on purpose. I move loads after your effort answers, not on a calendar.',
-              style: TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 12.5,
-                  height: 1.55,
-                  color: AppColors.textMuted)),
-          const SizedBox(height: 22),
-          Row(
-            children: [
-              for (var i = 0; i < 7; i++) ...[
-                if (i > 0) const SizedBox(width: 5),
-                Expanded(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    decoration: BoxDecoration(
-                      color: sorted.contains(i + 1)
-                          ? AppColors.accent.withValues(alpha: 0.12)
-                          : AppColors.surface,
-                      border: Border.all(
-                          color: sorted.contains(i + 1)
-                              ? AppColors.accent.withValues(alpha: 0.3)
-                              : AppColors.border),
-                      borderRadius: BorderRadius.circular(11),
-                    ),
-                    child: Column(
-                      children: [
-                        Text(letters[i],
-                            style: TextStyle(
-                                fontFamily: AppTheme.fontFamily,
-                                fontWeight: FontWeight.w500,
-                                fontSize: 9.5,
-                                color: sorted.contains(i + 1)
-                                    ? AppColors.textMuted
-                                    : AppColors.inactiveFill)),
-                        const SizedBox(height: 7),
-                        Text(sorted.contains(i + 1) ? 'ON' : '·',
-                            style: TextStyle(
-                                fontFamily: AppTheme.fontFamily,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 9.5,
-                                color: sorted.contains(i + 1)
-                                    ? AppColors.accent
-                                    : AppColors.textDim)),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-          const SizedBox(height: 24),
-          _leftAccentBox(
-            title: 'Week one is calibration',
-            body: 'Loads start conservative and climb from your real effort answers. Your first session is on the Train tab.',
-          ),
-          const SizedBox(height: 24),
-          _primaryButton(
-              label: "Start today's session", enabled: true, onTap: widget.onFinished),
-        ],
-      ),
-    );
-  }
-
   // ── shared bits ───────────────────────────────────────────────────────────
   Widget _unitToggle() {
     return Center(
@@ -1763,7 +1667,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         mainAxisSize: MainAxisSize.min,
         children: [
           for (final (label, metric) in [('Kilograms', true), ('Pounds', false)]) ...[
-            GestureDetector(
+            Pressable(
               onTap: () => setState(() => _metric = metric),
               child: Container(
                 margin: const EdgeInsets.symmetric(horizontal: 3),
@@ -1785,7 +1689,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
     );
   }
 
-  Widget _circleBtn(IconData icon, VoidCallback onTap) => GestureDetector(
+  Widget _circleBtn(IconData icon, VoidCallback onTap) => Pressable(
         onTap: onTap,
         child: Container(
           width: 44,
@@ -1798,7 +1702,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         ),
       );
 
-  Widget _circleBtnSmall(IconData icon, VoidCallback onTap) => GestureDetector(
+  Widget _circleBtnSmall(IconData icon, VoidCallback onTap) => Pressable(
         onTap: onTap,
         child: Container(
           width: 38,
@@ -1808,7 +1712,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         ),
       );
 
-  Widget _smallRound(IconData icon, VoidCallback onTap) => GestureDetector(
+  Widget _smallRound(IconData icon, VoidCallback onTap) => Pressable(
         onTap: onTap,
         child: Container(
           width: 38,
@@ -1854,7 +1758,8 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   Widget _primaryButton(
           {required String label, required bool enabled, required VoidCallback onTap}) =>
-      GestureDetector(
+      Pressable(
+        haptic: PressFx.medium,
         onTap: enabled ? onTap : null,
         child: Container(
           width: double.infinity,

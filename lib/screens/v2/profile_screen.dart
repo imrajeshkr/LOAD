@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../models/v2_models.dart';
 import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
+import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/v2_widgets.dart';
 
@@ -30,16 +32,18 @@ class _ProfileTabState extends State<ProfileTab> {
   // Staged plan edits (D3: client-side only, discarded on discard).
   late List<GoalV2> _goals;
   late List<int> _weekdays; // ISO 1..7
+  late String _split; // split_preference
   double? _target;
   late List<_WorkingFlag> _flags;
   String _painNote = '';
   double? _barKg;
-  // Saved snapshot to diff against.
-  late List<GoalV2> _savedGoals;
+  // Saved snapshot for the training-week strip's staged diff.
   late List<int> _savedWeekdays;
-  double? _savedTarget;
-  late List<_WorkingFlag> _savedFlags;
-  double? _savedBarKg;
+  late String _savedSplit;
+  // The plan's live weekday → session-label map (from the server), for the
+  // "Your plan" strip. Rendered when there are no staged plan edits.
+  Map<int, String> _slots = const {};
+  bool _swapping = false;
 
   List<JointV2> _joints = const [];
 
@@ -74,15 +78,14 @@ class _ProfileTabState extends State<ProfileTab> {
         _paused = data.paused;
         _goals = [...data.goals];
         _weekdays = [...data.trainingWeekdays];
+        _split = data.splitPreference;
+        _slots = data.weekdaySlots;
         _target = data.targetWeightKg;
         _flags = [...flags];
         _painNote = '';
         _barKg = data.barWeightKg;
-        _savedGoals = [...data.goals];
         _savedWeekdays = [...data.trainingWeekdays];
-        _savedTarget = data.targetWeightKg;
-        _savedFlags = [...flags];
-        _savedBarKg = data.barWeightKg;
+        _savedSplit = data.splitPreference;
         _joints = results[1] as List<JointV2>;
         _loading = false;
       });
@@ -95,30 +98,12 @@ class _ProfileTabState extends State<ProfileTab> {
     }
   }
 
-  // ── dirty tracking ──────────────────────────────────────────────────────
-  bool get _goalsDirty => !_sameGoals(_goals, _savedGoals);
+  // ── training-week staging (the one widget that stages, then rebuilds) ─────
   bool get _daysDirty => !_sameInts(_weekdays, _savedWeekdays);
-  bool get _targetDirty => _target != _savedTarget;
-  bool get _flagsDirty => !_sameFlags(_flags, _savedFlags) || _painNote.trim().isNotEmpty;
-  bool get _barDirty => _barKg != _savedBarKg;
-  bool get _dirty =>
-      _goalsDirty || _daysDirty || _targetDirty || _flagsDirty || _barDirty;
-  int get _changeCount =>
-      (_goalsDirty ? 1 : 0) +
-      (_daysDirty ? 1 : 0) +
-      (_targetDirty ? 1 : 0) +
-      (_flagsDirty ? 1 : 0) +
-      (_barDirty ? 1 : 0);
+  bool get _splitDirty => _split != _savedSplit;
+  /// A staged change to the week's shape — days or split — pending a rebuild.
+  bool get _planShapeDirty => _daysDirty || _splitDirty;
 
-  static bool _sameFlags(List<_WorkingFlag> a, List<_WorkingFlag> b) {
-    final ka = a.map((f) => f.key).toSet();
-    final kb = b.map((f) => f.key).toSet();
-    return ka.length == kb.length && ka.containsAll(kb);
-  }
-
-  static bool _sameGoals(List<GoalV2> a, List<GoalV2> b) =>
-      a.length == b.length &&
-      List.generate(a.length, (i) => a[i] == b[i]).every((x) => x);
   static bool _sameInts(List<int> a, List<int> b) {
     if (a.length != b.length) return false;
     final x = [...a]..sort(), y = [...b]..sort();
@@ -174,59 +159,35 @@ class _ProfileTabState extends State<ProfileTab> {
     }
   }
 
-  Future<void> _rewriteWeek() async {
-    Navigator.of(context).pop(); // close review sheet
+  /// Apply one independent change, then regenerate the program. [apply] writes
+  /// just that change to the DB; the confirm names what it costs. Reshape edits
+  /// (goal, split, days, working-around, bar) each call this on their own.
+  Future<bool> _rebuild({
+    required String title,
+    required String effect,
+    required Future<void> Function() apply,
+  }) async {
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ConfirmSheet(title: title, body: effect, confirmLabel: 'Rebuild'),
+    );
+    if (ok != true) return false;
     setState(() => _loading = true);
     try {
-      final svc = SupabaseService.instance;
-      // Constraints first: the new plan generation reads them to exclude
-      // (or re-admit) exercises, so this must land before generateProgram().
-      if (_flagsDirty) {
-        final removed = _savedFlags
-            .where((sf) => sf.id != null && !_flags.any((f) => f.id == sf.id))
-            .toList();
-        final added = _flags.where((f) => f.id == null).toList();
-        for (final r in removed) {
-          await svc.removeConstraint(r.id!);
-        }
-        for (final a in added) {
-          await svc.addConstraint(jointId: a.jointId, side: a.side, label: a.display);
-        }
-        final note = _painNote.trim();
-        if (note.isNotEmpty) {
-          await svc.addConstraint(label: note);
-        }
-      }
-      final patch = <String, dynamic>{};
-      if (_goalsDirty) {
-        patch['goals'] = _goals.map((g) => g.db).toList();
-        patch['goal_is_coach_choice'] = _goals.isEmpty;
-      }
-      if (_daysDirty) patch['training_weekdays'] = _weekdays;
-      if (_targetDirty) patch['target_weight_kg'] = _target;
-      if (_barDirty) patch['bar_weight_kg'] = _barKg;
-      await svc.updatePlanProfile(patch);
-      await svc.generateProgram();
+      await apply();
+      await SupabaseService.instance.generateProgram();
       await _load();
       Haptics.success();
-      if (mounted) _toast('Your week has been rewritten.');
+      if (mounted) _toast('Your week has been rebuilt.');
+      return true;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       Haptics.error();
       setState(() => _loading = false);
-      _toast("Couldn't rewrite the week — try again.");
+      _toast("Couldn't rebuild your week — try again.");
+      return false;
     }
-  }
-
-  void _discard() {
-    setState(() {
-      _goals = [..._savedGoals];
-      _weekdays = [..._savedWeekdays];
-      _target = _savedTarget;
-      _flags = [..._savedFlags];
-      _painNote = '';
-      _barKg = _savedBarKg;
-    });
   }
 
   void _toast(String msg) => ScaffoldMessenger.of(context)
@@ -283,8 +244,6 @@ class _ProfileTabState extends State<ProfileTab> {
               ],
             ),
           ),
-          if (_dirty)
-            Positioned(left: 14, right: 14, bottom: 8, child: _dirtyBar()),
         ],
       ),
     );
@@ -292,57 +251,179 @@ class _ProfileTabState extends State<ProfileTab> {
 
   // ── header ──────────────────────────────────────────────────────────────
   Widget _header(ProfileDataV2 d) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 4, 0, 2),
-      child: Row(
-        children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: AppColors.accent,
-              borderRadius: BorderRadius.circular(19),
+    return Pressable(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _editHeader(d),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(4, 4, 0, 2),
+        child: Row(
+          children: [
+            _avatar(d, size: 56, radius: 19, fontSize: 21),
+            const SizedBox(width: 13),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(d.displayName ?? 'Add your name',
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 20,
+                          height: 1.15,
+                          color: AppColors.textPrimary)),
+                  const SizedBox(height: 4),
+                  Text(d.email ?? '—',
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontSize: 11.5,
+                          color: AppColors.textMuted)),
+                ],
+              ),
             ),
-            alignment: Alignment.center,
-            child: Text(d.initials,
+            Container(
+              width: 34,
+              height: 34,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.border),
+              ),
+              child: const Icon(Icons.edit_outlined, size: 16, color: AppColors.textMuted),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _avatar(ProfileDataV2 d,
+      {required double size, required double radius, required double fontSize}) {
+    final url = d.avatarUrl;
+    if (url != null && url.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
+        child: Image.network(url,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => _initialsBox(d, size, radius, fontSize)),
+      );
+    }
+    return _initialsBox(d, size, radius, fontSize);
+  }
+
+  Widget _initialsBox(ProfileDataV2 d, double size, double radius, double fontSize) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: AppColors.accent,
+        borderRadius: BorderRadius.circular(radius),
+      ),
+      alignment: Alignment.center,
+      child: Text(d.initials,
+          style: TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontWeight: FontWeight.w700,
+              fontSize: fontSize,
+              color: AppColors.onAccent)),
+    );
+  }
+
+  Future<void> _editHeader(ProfileDataV2 d) async {
+    final ctrl = TextEditingController(text: d.displayName ?? '');
+    var avatarUrl = d.avatarUrl;
+    var busy = false;
+    await _sheet(
+      title: 'Your profile',
+      sub: 'How you show up in the app.',
+      body: StatefulBuilder(
+        builder: (ctx, setSheet) {
+          Future<void> pick() async {
+            if (busy) return;
+            final picked = await ImagePicker()
+                .pickImage(source: ImageSource.gallery, maxWidth: 900, imageQuality: 85);
+            if (picked == null) return;
+            setSheet(() => busy = true);
+            try {
+              final bytes = await picked.readAsBytes();
+              final ext = picked.name.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
+              final url = await SupabaseService.instance.uploadAvatar(bytes: bytes, ext: ext);
+              setSheet(() {
+                avatarUrl = url;
+                busy = false;
+              });
+              await _load();
+            } catch (e) {
+              setSheet(() => busy = false);
+              _toast("Couldn't upload that photo.");
+            }
+          }
+
+          return Column(
+            children: [
+              Pressable(
+                onTap: pick,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(24),
+                      child: (avatarUrl != null && avatarUrl!.isNotEmpty)
+                          ? Image.network(avatarUrl!, width: 76, height: 76, fit: BoxFit.cover)
+                          : Container(
+                              width: 76,
+                              height: 76,
+                              color: AppColors.accent,
+                              alignment: Alignment.center,
+                              child: Text(d.initials,
+                                  style: const TextStyle(
+                                      fontFamily: AppTheme.fontFamily,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 28,
+                                      color: AppColors.onAccent)),
+                            ),
+                    ),
+                    Positioned(
+                      right: -4,
+                      bottom: -4,
+                      child: Container(
+                        width: 28,
+                        height: 28,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceRaised,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppColors.border),
+                        ),
+                        child: Icon(busy ? Icons.hourglass_top_rounded : Icons.photo_camera_outlined,
+                            size: 14, color: AppColors.accent),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: ctrl,
+                textCapitalization: TextCapitalization.words,
                 style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 21,
-                    color: AppColors.onAccent)),
-          ),
-          const SizedBox(width: 13),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(d.displayName ?? 'Add your name',
-                    style: const TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 20,
-                        height: 1.15,
-                        color: AppColors.textPrimary)),
-                const SizedBox(height: 4),
-                Text(d.email ?? '—',
-                    style: const TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontSize: 11.5,
-                        color: AppColors.textMuted)),
-              ],
-            ),
-          ),
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.border),
-            ),
-            child: const Icon(Icons.edit_outlined, size: 16, color: AppColors.textMuted),
-          ),
-        ],
+                    fontFamily: AppTheme.fontFamily, fontSize: 14, color: AppColors.textPrimary),
+                decoration: const InputDecoration(
+                  hintText: 'Your name',
+                  fillColor: AppColors.surface,
+                ),
+              ),
+              const SizedBox(height: 20),
+              _sheetPrimary('Save', () async {
+                await SupabaseService.instance.updateDisplayName(ctrl.text);
+                if (ctx.mounted) Navigator.of(ctx).pop();
+                await _load();
+              }),
+            ],
+          );
+        },
       ),
     );
   }
@@ -427,7 +508,7 @@ class _ProfileTabState extends State<ProfileTab> {
             ),
           ),
           const SizedBox(width: 10),
-          GestureDetector(
+          Pressable(
             onTap: _togglePause,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
@@ -450,54 +531,6 @@ class _ProfileTabState extends State<ProfileTab> {
 
   // ── your plan ───────────────────────────────────────────────────────────
   Widget _planCard(ProfileDataV2 d) {
-    final w = _weekdays.length;
-    final rows = <Widget>[
-      _PlanRow(
-        icon: Icons.flag_outlined,
-        label: 'Goal',
-        value: _goals.isEmpty
-            ? "Coach's call"
-            : _goals.map((g) => g.label).join(' · '),
-        dirty: _goalsDirty,
-        onTap: _openGoalSheet,
-      ),
-      _PlanRow(
-        icon: Icons.calendar_month_outlined,
-        label: 'Training days',
-        value: '$w a week · ${_weekdayNames(_weekdays)}',
-        dirty: _daysDirty,
-        onTap: _openDaysSheet,
-      ),
-      _PlanRow(
-        icon: Icons.view_week_outlined,
-        label: 'Split',
-        value: _splitLabel(w),
-        dirty: false,
-        onTap: _openDaysSheet,
-      ),
-      _PlanRow(
-        icon: Icons.monitor_weight_outlined,
-        label: 'Bodyweight',
-        value: _bodyweightValue(d),
-        dirty: _targetDirty,
-        onTap: _openTargetSheet,
-      ),
-      _PlanRow(
-        icon: Icons.healing_outlined,
-        label: 'Working around',
-        value: _flags.isEmpty ? 'Nothing flagged' : _flags.map((f) => f.display).join(' · '),
-        dirty: _flagsDirty,
-        onTap: _openInjuriesSheet,
-      ),
-      _PlanRow(
-        icon: Icons.fitness_center,
-        label: 'Your bar',
-        value: 'Full length · ${_n(_barKg ?? d.barWeightKg)} kg',
-        dirty: _barDirty,
-        last: true,
-        onTap: _openBarSheet,
-      ),
-    ];
     return V2Card(
       padding: const EdgeInsets.fromLTRB(15, 16, 15, 4),
       child: Column(
@@ -518,10 +551,244 @@ class _ProfileTabState extends State<ProfileTab> {
                       fontFamily: AppTheme.fontFamily, fontSize: 10, color: AppColors.textMuted)),
             ],
           ),
+          const SizedBox(height: 14),
+          _trainingWeekBlock(),
           const SizedBox(height: 6),
-          ...rows,
+          const Divider(height: 1, color: AppColors.border),
+          _PlanRow(
+            icon: Icons.flag_outlined,
+            label: 'Goal',
+            value: _goals.isEmpty ? "Coach's call" : _goals.map((g) => g.label).join(' · '),
+            dirty: false,
+            onTap: _openGoalSheet,
+          ),
+          _PlanRow(
+            icon: Icons.monitor_weight_outlined,
+            label: 'Bodyweight',
+            value: _bodyweightValue(d),
+            dirty: false,
+            onTap: _openTargetSheet,
+          ),
+          _PlanRow(
+            icon: Icons.healing_outlined,
+            label: 'Working around',
+            value: _flags.isEmpty ? 'Nothing flagged' : _flags.map((f) => f.display).join(' · '),
+            dirty: false,
+            onTap: _openInjuriesSheet,
+          ),
+          _PlanRow(
+            icon: Icons.fitness_center,
+            label: 'Your bar',
+            value: 'Full length · ${_n(_barKg ?? d.barWeightKg)} kg',
+            dirty: false,
+            last: true,
+            onTap: _openBarSheet,
+          ),
         ],
       ),
+    );
+  }
+
+  // ── training-week strip: split toggle + draggable day chips ────────────────
+  static const _splitOptions = [
+    ('Full body', 'full_body'),
+    ('PPL ×2', 'push_pull_legs'),
+    ('Up / Low', 'upper_lower'),
+    ('Coach', 'no_preference'),
+  ];
+
+  /// The day-type labels a split lays across the training weekdays, matching
+  /// how the program generator assigns them (ascending weekdays, cycling).
+  List<String> _splitTypeLabels(String split, int dayCount) {
+    switch (split) {
+      case 'push_pull_legs':
+        return const ['Push day', 'Pull day', 'Leg day'];
+      case 'upper_lower':
+        return const ['Upper body', 'Lower body'];
+      case 'full_body':
+        return const ['Full body A', 'Full body B'];
+      default: // no_preference → derived from the day count
+        if (dayCount <= 3) return const ['Full body A', 'Full body B'];
+        if (dayCount <= 5) return const ['Upper body', 'Lower body'];
+        return const ['Push day', 'Pull day', 'Leg day'];
+    }
+  }
+
+  /// The weekday→label map to render. While there's a staged shape change, the
+  /// real types aren't known until the rebuild, so preview the split's default
+  /// assignment; otherwise use the live plan.
+  Map<int, String> _effectiveSlots() {
+    if (!_planShapeDirty) return _slots;
+    final wd = [..._weekdays]..sort();
+    final types = _splitTypeLabels(_split, wd.length);
+    final m = <int, String>{};
+    for (var i = 0; i < wd.length; i++) {
+      m[wd[i]] = types.isEmpty ? '' : types[i % types.length];
+    }
+    return m;
+  }
+
+  void _setSplit(String s) {
+    if (_split == s) return;
+    Haptics.selection();
+    setState(() => _split = s);
+  }
+
+  void _toggleDay(int wd) {
+    Haptics.selection();
+    setState(() {
+      if (_weekdays.contains(wd)) {
+        _weekdays.remove(wd);
+      } else {
+        _weekdays.add(wd);
+        _weekdays.sort();
+      }
+    });
+  }
+
+  /// The date in the current Mon–Sun week for an ISO weekday (1=Mon..7=Sun).
+  DateTime _thisWeekDate(int isoWeekday) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final monday = today.subtract(Duration(days: today.weekday - 1));
+    return monday.add(Duration(days: isoWeekday - 1));
+  }
+
+  Future<void> _swapDays(int a, int b) async {
+    if (a == b || _swapping || _planShapeDirty) return;
+    Haptics.selection();
+    final scope = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _SwapScopeSheet(fromTag: _planTag(_slots[a]), toTag: _planTag(_slots[b])),
+    );
+    if (scope == null || !mounted) return;
+    setState(() => _swapping = true);
+    try {
+      if (scope == 'forever') {
+        await SupabaseService.instance.swapProgramWeekdays(a, b);
+      } else {
+        await SupabaseService.instance
+            .swapScheduledDays(_thisWeekDate(a), _thisWeekDate(b), 'week');
+      }
+      Haptics.success();
+      await _load();
+      if (mounted) {
+        _toast(scope == 'forever' ? 'Swapped — every week from now.' : 'Swapped for this week.');
+      }
+    } catch (e) {
+      Haptics.error();
+      if (mounted) _toast("Couldn't swap those days.");
+      await _load();
+    } finally {
+      if (mounted) setState(() => _swapping = false);
+    }
+  }
+
+  /// Apply the staged split / day-count change as an independent rebuild.
+  Future<void> _applyShapeRebuild() async {
+    final title = _splitDirty ? 'Switch to ${_splitDisplay(_split)}?' : 'Change your training days?';
+    await _rebuild(
+      title: title,
+      effect: 'New sessions and exercise picks for the days ahead. Every set you have logged is kept.',
+      apply: () async {
+        final patch = <String, dynamic>{};
+        if (_daysDirty) patch['training_weekdays'] = _weekdays;
+        if (_splitDirty) patch['split_preference'] = _split;
+        await SupabaseService.instance.updatePlanProfile(patch);
+      },
+    );
+  }
+
+  void _cancelShape() {
+    setState(() {
+      _split = _savedSplit;
+      _weekdays = [..._savedWeekdays];
+    });
+  }
+
+  Widget _trainingWeekBlock() {
+    final n = _weekdays.length;
+    final slots = _effectiveSlots();
+    final preview = _planShapeDirty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Text('TRAINING SPLIT',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontSize: 9,
+                    letterSpacing: 0.8,
+                    color: AppColors.textFaint)),
+            const Spacer(),
+            Text('$n ${n == 1 ? 'day' : 'days'} a week',
+                style: const TextStyle(
+                    fontFamily: AppTheme.fontFamily, fontSize: 10, color: AppColors.textMuted)),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            border: Border.all(color: AppColors.border),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          padding: const EdgeInsets.all(3),
+          child: Row(
+            children: [
+              for (final o in _splitOptions)
+                Expanded(
+                  child: Pressable(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => _setSplit(o.$2),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: _split == o.$2 ? AppColors.accent : Colors.transparent,
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: Text(o.$1,
+                          maxLines: 1,
+                          overflow: TextOverflow.clip,
+                          style: TextStyle(
+                              fontFamily: AppTheme.fontFamily,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 10.5,
+                              color: _split == o.$2 ? AppColors.onAccent : AppColors.textMuted)),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 11),
+        _PlanWeekStrip(
+          weekdays: _weekdays,
+          slots: slots,
+          draggable: !preview && !_swapping,
+          preview: preview,
+          onToggle: _toggleDay,
+          onSwap: _swapDays,
+        ),
+        const SizedBox(height: 9),
+        if (preview)
+          _ShapeConfirmBar(onCancel: _cancelShape, onRebuild: _applyShapeRebuild)
+        else
+          Row(
+            children: [
+              const Icon(Icons.drag_indicator_rounded, size: 12, color: AppColors.textFaint),
+              const SizedBox(width: 5),
+              const Expanded(
+                child: Text('Drag a day onto another to swap · tap a day to add or rest',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily, fontSize: 9.5, color: AppColors.textFaint)),
+              ),
+            ],
+          ),
+      ],
     );
   }
 
@@ -554,8 +821,6 @@ class _ProfileTabState extends State<ProfileTab> {
             onSelect: (v) => _applyPrefs(
                 _prefs.copyWith(defaultRestSeconds: v), {'default_rest_seconds': v}),
           ),
-          const SizedBox(height: 8),
-          _note(_restNote(_prefs.defaultRestSeconds)),
           const SizedBox(height: 15),
           _fieldLabel('Ask how the set felt'),
           _Segmented<String>(
@@ -568,26 +833,21 @@ class _ProfileTabState extends State<ProfileTab> {
             onSelect: (v) => _applyPrefs(
                 _prefs.copyWith(effortPrompt: v), {'effort_prompt': v}),
           ),
-          const SizedBox(height: 8),
-          _note(_effortNote(_prefs.effortPrompt)),
           const SizedBox(height: 6),
           _ToggleRow(
-            label: 'Start rest automatically',
-            sub: 'The timer begins the moment you log a set',
+            label: 'Start rest between sets automatically',
             value: _prefs.autoStartRest,
             onChanged: (v) => _applyPrefs(
                 _prefs.copyWith(autoStartRest: v), {'auto_start_rest': v}),
           ),
           _ToggleRow(
-            label: 'Keep the screen awake',
-            sub: 'No unlocking with chalk on your hands',
+            label: 'Keep screen awake while a session runs',
             value: _prefs.keepScreenAwake,
             onChanged: (v) => _applyPrefs(
                 _prefs.copyWith(keepScreenAwake: v), {'keep_screen_awake': v}),
           ),
           _ToggleRow(
             label: 'Sound when rest ends',
-            sub: 'Off by default — most gyms are loud enough',
             value: _prefs.restEndSound,
             onChanged: (v) => _applyPrefs(
                 _prefs.copyWith(restEndSound: v), {'rest_end_sound': v}),
@@ -620,7 +880,7 @@ class _ProfileTabState extends State<ProfileTab> {
 
   Widget _plateChip(double kg, double w, double h) {
     final on = _plates.contains(kg);
-    return GestureDetector(
+    return Pressable(
       onTap: () => _togglePlate(kg),
       child: Container(
         padding: const EdgeInsets.fromLTRB(9, 8, 12, 8),
@@ -723,7 +983,7 @@ class _ProfileTabState extends State<ProfileTab> {
                   fontWeight: FontWeight.w700,
                   fontSize: 14,
                   color: AppColors.textPrimary)),
-          GestureDetector(
+          Pressable(
             behavior: HitTestBehavior.opaque,
             onTap: () => _toast(isGoogle
                 ? 'Managed by Google — nothing to change here.'
@@ -791,18 +1051,18 @@ class _ProfileTabState extends State<ProfileTab> {
           Row(
             children: [
               _AccountTile(
-                icon: Icons.download_outlined,
-                label: 'Export data',
-                onTap: () => _toast('Export is coming in a later build.'),
+                icon: Icons.delete_outline,
+                label: 'Delete',
+                warn: true,
+                onTap: () => _confirmDeleteAccount(d),
               ),
               const SizedBox(width: 7),
               _AccountTile(icon: Icons.logout, label: 'Sign out', onTap: _confirmSignOut),
               const SizedBox(width: 7),
               _AccountTile(
-                icon: Icons.delete_outline,
-                label: 'Delete',
-                warn: true,
-                onTap: () => _confirmDeleteAccount(d),
+                icon: Icons.download_outlined,
+                label: 'Export data',
+                onTap: () => _toast('Export is coming in a later build.'),
               ),
             ],
           ),
@@ -812,7 +1072,7 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Widget _pauseRow() {
-    return GestureDetector(
+    return Pressable(
       onTap: _togglePause,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
@@ -853,64 +1113,6 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   // ── dirty bar ───────────────────────────────────────────────────────────
-  Widget _dirtyBar() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
-      decoration: BoxDecoration(
-        color: AppColors.accent,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: const [
-          BoxShadow(color: Color(0x80000000), blurRadius: 30, offset: Offset(0, 12)),
-        ],
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.auto_awesome, size: 19, color: AppColors.onAccent),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                    _changeCount == 1
-                        ? '1 change to your plan'
-                        : '$_changeCount changes to your plan',
-                    style: const TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                        color: AppColors.onAccent)),
-                const SizedBox(height: 2),
-                Text('Nothing is saved until you look at it',
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontSize: 10,
-                        height: 1.4,
-                        color: AppColors.onAccent.withValues(alpha: 0.7))),
-              ],
-            ),
-          ),
-          GestureDetector(
-            onTap: _openReviewSheet,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppColors.page,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: const Text('Review',
-                  style: TextStyle(
-                      fontFamily: AppTheme.fontFamily,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 11,
-                      color: AppColors.accent)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   // ── sheets ──────────────────────────────────────────────────────────────
   Future<void> _sheet({required String title, required String sub, required Widget body}) {
     return showModalBottomSheet(
@@ -922,6 +1124,8 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Future<void> _openGoalSheet() async {
+    final snapshot = [..._goals];
+    var applied = false;
     await _sheet(
       title: 'What are you chasing?',
       sub: 'Drives exercise choice and rep ranges. Pick as many as fit — the first one you tap leads.',
@@ -939,76 +1143,31 @@ class _ProfileTabState extends State<ProfileTab> {
                       })),
                 ),
               const SizedBox(height: 20),
-              _sheetPrimary('Done', () => Navigator.of(ctx).pop()),
+              _sheetPrimary('Save', () async {
+                Navigator.of(ctx).pop();
+                applied = true;
+                final ok = await _rebuild(
+                  title: 'Update your goal?',
+                  effect: 'Exercise picks and rep ranges shift toward your goal. Every logged set is kept.',
+                  apply: () => SupabaseService.instance.updatePlanProfile({
+                    'goals': _goals.map((g) => g.db).toList(),
+                    'goal_is_coach_choice': _goals.isEmpty,
+                  }),
+                );
+                if (!ok && mounted) setState(() => _goals = [...snapshot]);
+              }),
             ],
           );
         },
       ),
     );
-  }
-
-  Future<void> _openDaysSheet() async {
-    const letters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-    await _sheet(
-      title: 'Which days are yours?',
-      sub: 'Drives the split and how long each session runs. Tap the days you can actually show up.',
-      body: StatefulBuilder(
-        builder: (ctx, setSheet) {
-          return Column(
-            children: [
-              Row(
-                children: [
-                  for (var i = 0; i < 7; i++) ...[
-                    if (i > 0) const SizedBox(width: 6),
-                    Expanded(
-                      child: GestureDetector(
-                        onTap: () => setSheet(() => setState(() {
-                              final iso = i + 1;
-                              _weekdays.contains(iso)
-                                  ? _weekdays.remove(iso)
-                                  : _weekdays.add(iso);
-                              _weekdays.sort();
-                            })),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 15),
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: _weekdays.contains(i + 1)
-                                ? AppColors.accent
-                                : AppColors.surface,
-                            border: Border.all(
-                                color: _weekdays.contains(i + 1)
-                                    ? AppColors.accent
-                                    : AppColors.border),
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Text(letters[i],
-                              style: TextStyle(
-                                  fontFamily: AppTheme.fontFamily,
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 12,
-                                  color: _weekdays.contains(i + 1)
-                                      ? AppColors.onAccent
-                                      : AppColors.textMuted)),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 14),
-              _verdictBox(_daysVerdict(_weekdays.length)),
-              const SizedBox(height: 20),
-              _sheetPrimary('Done', () => Navigator.of(ctx).pop()),
-            ],
-          );
-        },
-      ),
-    );
+    if (!applied && mounted) setState(() => _goals = [...snapshot]);
   }
 
   Future<void> _openTargetSheet() async {
     final bw = _data!.latestWeightKg ?? _target ?? 80;
+    final snapshot = _target;
+    var applied = false;
     await _sheet(
       title: 'Target weight',
       sub: 'Moves the trend line on Progress. Nothing in your training depends on it.',
@@ -1052,67 +1211,25 @@ class _ProfileTabState extends State<ProfileTab> {
               _verdictBox(
                   'Protein target moves with your weight, not this number. It stays at ${(bw * 1.8).round()} g a day.'),
               const SizedBox(height: 20),
-              _sheetPrimary('Done', () => Navigator.of(ctx).pop()),
+              _sheetPrimary('Save', () async {
+                Navigator.of(ctx).pop();
+                applied = true;
+                try {
+                  await SupabaseService.instance
+                      .updatePlanProfile({'target_weight_kg': _target});
+                  await _load();
+                  Haptics.success();
+                } catch (e) {
+                  if (mounted) setState(() => _target = snapshot);
+                  _toast("Couldn't save that — try again.");
+                }
+              }),
             ],
           );
         },
       ),
     );
-  }
-
-  Future<void> _openReviewSheet() async {
-    final changes = _buildChanges();
-    await _sheet(
-      title: 'Before I rewrite the week',
-      sub: 'Here is exactly what moves.',
-      body: Column(
-        children: [
-          for (final c in changes) ...[
-            _changeCard(c),
-            const SizedBox(height: 9),
-          ],
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
-            decoration: BoxDecoration(
-              color: AppColors.accent.withValues(alpha: 0.07),
-              border: Border.all(color: AppColors.accent.withValues(alpha: 0.3)),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.bolt, size: 16, color: AppColors.accent),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                      'Your loads and history stay exactly where they are. Only the week ahead is rewritten, from tomorrow.',
-                      style: const TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontSize: 11.5,
-                          height: 1.55,
-                          color: AppColors.textSecondary)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-          _sheetPrimary('Rewrite my week', _rewriteWeek),
-          const SizedBox(height: 13),
-          GestureDetector(
-            onTap: () {
-              Navigator.of(context).pop();
-              _discard();
-            },
-            child: const Text('Discard these changes',
-                style: TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontWeight: FontWeight.w500,
-                    fontSize: 11.5,
-                    color: AppColors.textMuted)),
-          ),
-        ],
-      ),
-    );
+    if (!applied && mounted) setState(() => _target = snapshot);
   }
 
   /// One option per side of every joint — real schema data, not a hardcoded
@@ -1132,6 +1249,9 @@ class _ProfileTabState extends State<ProfileTab> {
 
   Future<void> _openInjuriesSheet() async {
     final painCtrl = TextEditingController(text: _painNote);
+    final snapshot = [..._flags];
+    final snapNote = _painNote;
+    var applied = false;
     await _sheet(
       title: 'Working around',
       sub: 'Lifts that come near a flagged area are capped, and the trainer warns you before them.',
@@ -1177,7 +1297,7 @@ class _ProfileTabState extends State<ProfileTab> {
                               ],
                             ),
                           ),
-                          GestureDetector(
+                          Pressable(
                             onTap: () => setSheet(() => setState(() => _flags.removeWhere((x) => x.key == f.key))),
                             child: Container(
                               width: 30,
@@ -1211,7 +1331,7 @@ class _ProfileTabState extends State<ProfileTab> {
                   for (final option in _areaOptions)
                     Builder(builder: (context) {
                       final on = _flags.any((f) => f.key == option.key);
-                      return GestureDetector(
+                      return Pressable(
                         onTap: () => setSheet(() => setState(() {
                               on ? _flags.removeWhere((f) => f.key == option.key) : _flags.add(option);
                             })),
@@ -1254,12 +1374,46 @@ class _ProfileTabState extends State<ProfileTab> {
                 ),
               ),
               const SizedBox(height: 20),
-              _sheetPrimary('Done', () => Navigator.of(ctx).pop()),
+              _sheetPrimary('Save', () async {
+                Navigator.of(ctx).pop();
+                applied = true;
+                final ok = await _rebuild(
+                  title: 'Update what you work around?',
+                  effect: 'Lifts near a flagged area get capped or swapped; cleared areas go back to normal. Logged sets kept.',
+                  apply: () async {
+                    final svc = SupabaseService.instance;
+                    final orig = _data!.constraints.map(_WorkingFlag.fromConstraint).toList();
+                    final removed = orig
+                        .where((sf) => sf.id != null && !_flags.any((f) => f.id == sf.id))
+                        .toList();
+                    for (final r in removed) {
+                      await svc.removeConstraint(r.id!);
+                    }
+                    for (final a in _flags.where((f) => f.id == null)) {
+                      await svc.addConstraint(jointId: a.jointId, side: a.side, label: a.display);
+                    }
+                    final note = _painNote.trim();
+                    if (note.isNotEmpty) await svc.addConstraint(label: note);
+                  },
+                );
+                if (!ok && mounted) {
+                  setState(() {
+                    _flags = [...snapshot];
+                    _painNote = snapNote;
+                  });
+                }
+              }),
             ],
           );
         },
       ),
     );
+    if (!applied && mounted) {
+      setState(() {
+        _flags = [...snapshot];
+        _painNote = snapNote;
+      });
+    }
   }
 
   Future<void> _openBarSheet() async {
@@ -1269,6 +1423,8 @@ class _ProfileTabState extends State<ProfileTab> {
       ('fixed', 10.0),
       ('training', 5.0),
     ];
+    final snapshot = _barKg;
+    var applied = false;
     await _sheet(
       title: 'Your bar',
       sub: 'Every barbell load is built from this. Changing it recalculates all of them.',
@@ -1284,7 +1440,7 @@ class _ProfileTabState extends State<ProfileTab> {
                       padding: const EdgeInsets.only(right: 8),
                       child: Builder(builder: (context) {
                         final sel = (_barKg ?? 20) == kg;
-                        return GestureDetector(
+                        return Pressable(
                           onTap: () => setSheet(() => setState(() => _barKg = kg)),
                           child: Container(
                             padding: const EdgeInsets.symmetric(vertical: 13),
@@ -1317,14 +1473,24 @@ class _ProfileTabState extends State<ProfileTab> {
                 ],
               ),
               const SizedBox(height: 16),
-              _verdictBox('Every barbell prescription is built up from this weight the next time your week is rewritten.'),
+              _verdictBox('Every barbell prescription is rebuilt from this weight.'),
               const SizedBox(height: 20),
-              _sheetPrimary('Done', () => Navigator.of(ctx).pop()),
+              _sheetPrimary('Save', () async {
+                Navigator.of(ctx).pop();
+                applied = true;
+                final ok = await _rebuild(
+                  title: 'Rebuild with the new bar?',
+                  effect: 'Every barbell load is recalculated from this weight. Logged sets kept.',
+                  apply: () => SupabaseService.instance.updatePlanProfile({'bar_weight_kg': _barKg}),
+                );
+                if (!ok && mounted) setState(() => _barKg = snapshot);
+              }),
             ],
           );
         },
       ),
     );
+    if (!applied && mounted) setState(() => _barKg = snapshot);
   }
 
   Future<void> _confirmSignOut() async {
@@ -1338,7 +1504,7 @@ class _ProfileTabState extends State<ProfileTab> {
             await SupabaseService.instance.signOut();
           }),
           const SizedBox(height: 13),
-          GestureDetector(
+          Pressable(
             onTap: () => Navigator.of(context).pop(),
             child: const Text('Stay signed in',
                 style: TextStyle(
@@ -1373,7 +1539,7 @@ class _ProfileTabState extends State<ProfileTab> {
     required bool leads,
     required VoidCallback onTap,
   }) {
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.only(bottom: 8),
@@ -1424,7 +1590,7 @@ class _ProfileTabState extends State<ProfileTab> {
   }
 
   Widget _roundBtn(IconData icon, VoidCallback onTap) {
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
       child: Container(
         width: 46,
@@ -1442,7 +1608,8 @@ class _ProfileTabState extends State<ProfileTab> {
   Widget _sheetPrimary(String label, VoidCallback onTap) {
     return SizedBox(
       width: double.infinity,
-      child: GestureDetector(
+      child: Pressable(
+        haptic: PressFx.medium,
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 16),
@@ -1462,129 +1629,12 @@ class _ProfileTabState extends State<ProfileTab> {
     );
   }
 
-  Widget _changeCard(_Change c) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 14),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(c.label.toUpperCase(),
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 9.5,
-                  letterSpacing: 0.7,
-                  color: AppColors.textMuted)),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Flexible(
-                child: Text(c.from,
-                    style: const TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w500,
-                        fontSize: 12,
-                        decoration: TextDecoration.lineThrough,
-                        color: AppColors.textMuted)),
-              ),
-              const SizedBox(width: 9),
-              const Icon(Icons.arrow_forward, size: 15, color: AppColors.inactiveFill),
-              const SizedBox(width: 9),
-              Flexible(
-                child: Text(c.to,
-                    style: const TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12.5,
-                        color: AppColors.accent)),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(c.effect,
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 10.5,
-                  height: 1.5,
-                  color: AppColors.textMuted)),
-        ],
-      ),
-    );
-  }
-
-  List<_Change> _buildChanges() {
-    final out = <_Change>[];
-    if (_goalsDirty) {
-      final lead = _goals.isEmpty ? 'general strength' : _goals.first.label.toLowerCase();
-      out.add(_Change(
-        label: 'Goal',
-        from: _savedGoals.isEmpty ? 'None' : _savedGoals.map((g) => g.label).join(' · '),
-        to: _goals.isEmpty ? 'None' : _goals.map((g) => g.label).join(' · '),
-        effect: 'Exercise selection and rep ranges shift toward $lead.',
-      ));
-    }
-    if (_daysDirty) {
-      final d0 = _savedWeekdays.length, d1 = _weekdays.length;
-      out.add(_Change(
-        label: 'Training days',
-        from: '$d0 days · ${_weekdayNames(_savedWeekdays)}',
-        to: '$d1 days · ${_weekdayNames(_weekdays)}',
-        effect: d1 < d0
-            ? 'Fewer days means fuller sessions. I will fold the dropped work into the days you kept.'
-            : d1 > d0
-                ? 'More room to split the week. Sessions get shorter, not harder.'
-                : 'Same number of days, different ones. The split stays as it is.',
-      ));
-    }
-    if (_targetDirty) {
-      out.add(_Change(
-        label: 'Target weight',
-        from: _savedTarget == null ? 'Not set' : '${_n(_savedTarget!)} kg',
-        to: _target == null ? 'Not set' : '${_n(_target!)} kg',
-        effect: 'Only the trend line on Progress changes. Nothing in your training moves.',
-      ));
-    }
-    if (_flagsDirty) {
-      final f0 = _savedFlags.map((f) => f.display).join(', ');
-      final f1 = _flags.map((f) => f.display).join(', ');
-      out.add(_Change(
-        label: 'Working around',
-        from: f0.isEmpty ? 'Nothing flagged' : f0,
-        to: f1.isEmpty ? 'Nothing flagged' : f1,
-        effect: _flags.length > _savedFlags.length
-            ? 'Lifts near the new area are capped, and you get a warning before each one.'
-            : 'The lifts held back for that area go back to normal progression.',
-      ));
-    }
-    if (_barDirty) {
-      out.add(_Change(
-        label: 'Your bar',
-        from: '${_n(_savedBarKg ?? 20)} kg',
-        to: '${_n(_barKg ?? 20)} kg',
-        effect: 'Every barbell load in the new week is built up from this weight.',
-      ));
-    }
-    return out;
-  }
-
   // ── formatting helpers ──────────────────────────────────────────────────
   Widget _fieldLabel(String s) => Text(s.toUpperCase(),
       style: const TextStyle(
           fontFamily: AppTheme.fontFamily,
           fontSize: 9.5,
           letterSpacing: 0.7,
-          color: AppColors.textMuted));
-
-  Widget _note(String s) => Text(s,
-      style: const TextStyle(
-          fontFamily: AppTheme.fontFamily,
-          fontSize: 10,
-          height: 1.45,
           color: AppColors.textMuted));
 
   String _bodyweightValue(ProfileDataV2 d) {
@@ -1595,42 +1645,11 @@ class _ProfileTabState extends State<ProfileTab> {
     return '$bwStr · target ${_n(t)} kg';
   }
 
-  static const _dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  String _weekdayNames(List<int> iso) {
-    if (iso.isEmpty) return 'none';
-    final s = [...iso]..sort();
-    return s.map((d) => _dayNames[(d - 1).clamp(0, 6)]).join(', ');
-  }
-
-  String _splitLabel(int days) => switch (days) {
-        0 => '—',
-        1 || 2 => 'Full body',
-        3 => 'Full body / PPL',
-        4 || 5 => 'Upper / Lower',
-        _ => 'PPL ×2',
-      };
-
-  String _daysVerdict(int c) => switch (c) {
-        0 => 'Pick at least one. Even one real day beats a plan you skip.',
-        1 || 2 => 'Two days works if both are full body. Your split would become full body.',
-        3 => 'Three days means full body sessions, or a rotating push/pull/legs.',
-        4 || 5 => 'Enough room for Upper / Lower with recovery between sessions.',
-        _ => 'Six or more needs light days built in. I will keep two of them easy.',
-      };
-
-  String _restNote(int s) => s <= 60
-      ? 'Short rests suit accessory work. Heavy compound sets will still get their full time.'
-      : s >= 180
-          ? 'Long rests for heavy triples. Your sessions will run longer.'
-          : 'A sensible middle. Each lift can still override it.';
-
-  String _effortNote(String e) => switch (e) {
-        'never' =>
-          'Loads will only move when you change them yourself, and the effort chart on Progress stays empty.',
-        'every_set' =>
-          'The most accurate picture, and the most tapping. Best if you are chasing a number.',
-        _ =>
-          "One answer per lift. Enough to move next week's loads without slowing you down.",
+  String _splitDisplay(String s) => switch (s) {
+        'push_pull_legs' => 'Push / Pull / Legs',
+        'upper_lower' => 'Upper / Lower',
+        'full_body' => 'Full body',
+        _ => "Coach's call",
       };
 
   static String _n(double v) =>
@@ -1646,14 +1665,376 @@ class _ProfileTabState extends State<ProfileTab> {
 // Leaf widgets
 // ─────────────────────────────────────────────────────────────────────────
 
-class _Change {
-  final String label, from, to, effect;
-  const _Change({required this.label, required this.from, required this.to, required this.effect});
+String _planTag(String? label) {
+  if (label == null || label.isEmpty) return '';
+  final s = label.toLowerCase();
+  if (s.startsWith('push')) return 'PUSH';
+  if (s.startsWith('pull')) return 'PULL';
+  if (s.startsWith('leg')) return 'LEGS';
+  if (s.startsWith('upper')) return 'UP';
+  if (s.startsWith('lower')) return 'LOW';
+  if (s.startsWith('full body a')) return 'FB A';
+  if (s.startsWith('full body b')) return 'FB B';
+  return label.toUpperCase();
 }
 
-/// One "Working around" entry, staged the same way as Goal/Days/Target:
-/// [id] is the real `user_constraints.id` once saved, null while newly added
-/// and not yet committed on "Rewrite my week".
+/// The 7-day strip inside "Your plan": each training weekday carries its
+/// session tag, rest days are muted. Drag one training day onto another to
+/// swap (instant), tap a day to add it or make it rest (staged rebuild).
+class _PlanWeekStrip extends StatelessWidget {
+  final List<int> weekdays; // ISO training weekdays
+  final Map<int, String> slots; // weekday → session label
+  final bool draggable;
+  final bool preview;
+  final void Function(int wd) onToggle;
+  final void Function(int a, int b) onSwap;
+  const _PlanWeekStrip({
+    required this.weekdays,
+    required this.slots,
+    required this.draggable,
+    required this.preview,
+    required this.onToggle,
+    required this.onSwap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        for (var wd = 1; wd <= 7; wd++) ...[
+          if (wd > 1) const SizedBox(width: 5),
+          Expanded(child: _chip(wd)),
+        ],
+      ],
+    );
+  }
+
+  Widget _chip(int wd) {
+    final training = weekdays.contains(wd);
+    final label = training ? slots[wd] : null;
+
+    Widget tapCell({bool hovering = false}) => Pressable(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => onToggle(wd),
+          child: _PlanChipCell(wd: wd, label: label, preview: preview, hovering: hovering),
+        );
+
+    if (!draggable) return tapCell();
+
+    Widget content = DragTarget<int>(
+      onWillAcceptWithDetails: (d) => d.data != wd,
+      onAcceptWithDetails: (d) => onSwap(d.data, wd),
+      builder: (ctx, cand, rej) => AnimatedScale(
+        scale: cand.isNotEmpty ? 1.06 : 1,
+        duration: const Duration(milliseconds: 120),
+        child: tapCell(hovering: cand.isNotEmpty),
+      ),
+    );
+
+    if (training) {
+      content = LongPressDraggable<int>(
+        data: wd,
+        onDragStarted: Haptics.selection,
+        feedback: Material(
+          color: Colors.transparent,
+          child: SizedBox(
+              width: 46, child: _PlanChipCell(wd: wd, label: label, preview: false)),
+        ),
+        childWhenDragging:
+            Opacity(opacity: 0.3, child: _PlanChipCell(wd: wd, label: label, preview: preview)),
+        child: content,
+      );
+    }
+    return content;
+  }
+}
+
+class _PlanChipCell extends StatelessWidget {
+  final int wd; // ISO 1..7
+  final String? label; // null = rest
+  final bool preview;
+  final bool hovering;
+  const _PlanChipCell(
+      {required this.wd, required this.label, required this.preview, this.hovering = false});
+
+  @override
+  Widget build(BuildContext context) {
+    const letters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+    final training = label != null;
+    final tag = training ? _planTag(label) : 'REST';
+
+    Color bg, border, pillFg, pillBg;
+    if (hovering) {
+      bg = AppColors.accent.withValues(alpha: 0.14);
+      border = AppColors.accent;
+      pillFg = AppColors.accent;
+      pillBg = AppColors.accent.withValues(alpha: 0.14);
+    } else if (training) {
+      bg = AppColors.surface;
+      border = AppColors.border;
+      pillFg = AppColors.accent;
+      pillBg = AppColors.accent.withValues(alpha: 0.14);
+    } else {
+      bg = Colors.transparent;
+      border = AppColors.borderFaint;
+      pillFg = AppColors.textDim;
+      pillBg = Colors.transparent;
+    }
+
+    final chip = Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: border, width: hovering ? 1.5 : 1),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(letters[(wd - 1).clamp(0, 6)],
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w500,
+                  fontSize: 8.5,
+                  height: 1,
+                  color: training ? AppColors.textMuted : AppColors.textFaint)),
+          const SizedBox(height: 5),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+            decoration: BoxDecoration(color: pillBg, borderRadius: BorderRadius.circular(5)),
+            child: Text(tag,
+                maxLines: 1,
+                overflow: TextOverflow.clip,
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 7,
+                    letterSpacing: 0.3,
+                    color: pillFg)),
+          ),
+        ],
+      ),
+    );
+    return Opacity(opacity: preview && !hovering ? 0.55 : 1, child: chip);
+  }
+}
+
+/// The inline "rebuild" bar shown under the training-week strip while a split
+/// or day change is staged. Independent of every other plan edit.
+class _ShapeConfirmBar extends StatelessWidget {
+  final VoidCallback onCancel;
+  final VoidCallback onRebuild;
+  const _ShapeConfirmBar({required this.onCancel, required this.onRebuild});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(11, 10, 11, 10),
+      decoration: BoxDecoration(
+        color: AppColors.warn.withValues(alpha: 0.08),
+        border: Border.all(color: AppColors.warn.withValues(alpha: 0.30)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.autorenew_rounded, size: 14, color: AppColors.warn),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text('New shape — rebuild to apply',
+                style: TextStyle(fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textSecondary)),
+          ),
+          Pressable(
+            onTap: onCancel,
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              child: Text('Cancel',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                      color: AppColors.textMuted)),
+            ),
+          ),
+          const SizedBox(width: 4),
+          Pressable(
+            onTap: onRebuild,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              decoration: BoxDecoration(color: AppColors.accent, borderRadius: BorderRadius.circular(14)),
+              child: const Text('Rebuild',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11,
+                      color: AppColors.onAccent)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Scope sheet for a day swap — pops 'week' / 'forever', or null to cancel.
+class _SwapScopeSheet extends StatelessWidget {
+  final String fromTag;
+  final String toTag;
+  const _SwapScopeSheet({required this.fromTag, required this.toTag});
+  @override
+  Widget build(BuildContext context) {
+    return _sheetShell(
+      context,
+      children: [
+        Text('Swap $fromTag and $toTag',
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w700,
+                fontSize: 18,
+                color: AppColors.textPrimary)),
+        const SizedBox(height: 6),
+        const Text('Rearrange which session lands on which day.',
+            style: TextStyle(fontFamily: AppTheme.fontFamily, fontSize: 11.5, color: AppColors.textMuted)),
+        const SizedBox(height: 16),
+        _scopeBtn(context, 'Just this week', 'week', filled: true),
+        const SizedBox(height: 10),
+        _scopeBtn(context, 'Every week from now', 'forever', filled: false),
+        const SizedBox(height: 12),
+        Center(
+          child: Pressable(
+            onTap: () => Navigator.of(context).pop(),
+            child: const Text('Leave it as it is',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 11.5,
+                    color: AppColors.textMuted)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _scopeBtn(BuildContext context, String label, String scope, {required bool filled}) {
+    return SizedBox(
+      width: double.infinity,
+      child: Pressable(
+        onTap: () => Navigator.of(context).pop(scope),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: filled ? AppColors.accent : Colors.transparent,
+            border: filled ? null : Border.all(color: AppColors.border),
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: filled ? AppColors.onAccent : AppColors.textPrimary)),
+        ),
+      ),
+    );
+  }
+}
+
+/// A compact confirm sheet — pops true on confirm.
+class _ConfirmSheet extends StatelessWidget {
+  final String title;
+  final String body;
+  final String confirmLabel;
+  const _ConfirmSheet({required this.title, required this.body, required this.confirmLabel});
+  @override
+  Widget build(BuildContext context) {
+    return _sheetShell(
+      context,
+      children: [
+        Text(title,
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w700,
+                fontSize: 18,
+                color: AppColors.textPrimary)),
+        const SizedBox(height: 8),
+        Text(body,
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily, fontSize: 13, height: 1.5, color: AppColors.textSecondary)),
+        const SizedBox(height: 18),
+        Row(
+          children: [
+            Expanded(
+              child: Pressable(
+                onTap: () => Navigator.of(context).pop(false),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppColors.borderStrong),
+                    borderRadius: BorderRadius.circular(22),
+                  ),
+                  child: const Text('Keep as is',
+                      style: TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          color: AppColors.textPrimary)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Pressable(
+                onTap: () => Navigator.of(context).pop(true),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(color: AppColors.accent, borderRadius: BorderRadius.circular(22)),
+                  child: Text(confirmLabel,
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          color: AppColors.onAccent)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Shared bottom-sheet chrome for the confirm / scope sheets.
+Widget _sheetShell(BuildContext context, {required List<Widget> children}) {
+  return Container(
+    decoration: const BoxDecoration(
+      color: AppColors.surfaceRaised,
+      border: Border(top: BorderSide(color: AppColors.border)),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+    ),
+    padding: EdgeInsets.fromLTRB(20, 10, 20, 22 + MediaQuery.of(context).padding.bottom),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Center(
+          child: Container(
+            width: 38,
+            height: 4,
+            margin: const EdgeInsets.only(bottom: 16),
+            decoration: BoxDecoration(color: AppColors.borderStrong, borderRadius: BorderRadius.circular(3)),
+          ),
+        ),
+        ...children,
+      ],
+    ),
+  );
+}
+
+/// One "Working around" entry: [id] is the real `user_constraints.id` once
+/// saved, null while newly added and not yet committed.
 class _WorkingFlag {
   final String? id;
   final String? jointId;
@@ -1727,7 +2108,7 @@ class _PlanRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accent = dirty ? AppColors.accent : null;
-    return GestureDetector(
+    return Pressable(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       child: Container(
@@ -1822,7 +2203,7 @@ class _Segmented<T> extends StatelessWidget {
           for (var i = 0; i < options.length; i++) ...[
             if (i > 0) const SizedBox(width: 3),
             Expanded(
-              child: GestureDetector(
+              child: Pressable(
                 onTap: () => onSelect(options[i].$2),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
@@ -1853,12 +2234,13 @@ class _Segmented<T> extends StatelessWidget {
 }
 
 class _ToggleRow extends StatelessWidget {
-  final String label, sub;
+  final String label;
+  final String? sub;
   final bool value, last;
   final ValueChanged<bool> onChanged;
   const _ToggleRow({
     required this.label,
-    required this.sub,
+    this.sub,
     required this.value,
     required this.onChanged,
     this.last = false,
@@ -1866,7 +2248,7 @@ class _ToggleRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Pressable(
       behavior: HitTestBehavior.opaque,
       onTap: () => onChanged(!value),
       child: Container(
@@ -1888,13 +2270,15 @@ class _ToggleRow extends StatelessWidget {
                           fontWeight: FontWeight.w500,
                           fontSize: 12.5,
                           color: AppColors.textPrimary)),
-                  const SizedBox(height: 3),
-                  Text(sub,
-                      style: const TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontSize: 10,
-                          height: 1.45,
-                          color: AppColors.textMuted)),
+                  if (sub != null) ...[
+                    const SizedBox(height: 3),
+                    Text(sub!,
+                        style: const TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontSize: 10,
+                            height: 1.45,
+                            color: AppColors.textMuted)),
+                  ],
                 ],
               ),
             ),
@@ -2024,7 +2408,7 @@ class _DeleteAccountBodyState extends State<_DeleteAccountBody> {
         const SizedBox(height: 16),
         SizedBox(
           width: double.infinity,
-          child: GestureDetector(
+          child: Pressable(
             onTap: (_confirmed && !_busy) ? _delete : null,
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -2050,7 +2434,7 @@ class _DeleteAccountBodyState extends State<_DeleteAccountBody> {
         ),
         const SizedBox(height: 13),
         Center(
-          child: GestureDetector(
+          child: Pressable(
             onTap: _busy ? null : () => Navigator.of(context).pop(),
             child: const Text('Keep my account',
                 style: TextStyle(
@@ -2101,7 +2485,7 @@ class _AccountTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = warn ? AppColors.warn : AppColors.textPrimary;
     return Expanded(
-      child: GestureDetector(
+      child: Pressable(
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 13, horizontal: 6),
@@ -2207,7 +2591,7 @@ class _ErrorState extends StatelessWidget {
                     fontSize: 13,
                     color: AppColors.textMuted)),
             const SizedBox(height: 20),
-            OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
           ],
         ),
       ),

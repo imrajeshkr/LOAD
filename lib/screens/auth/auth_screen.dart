@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
@@ -29,6 +30,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _submit() async {
+    Haptics.tap();
     setState(() => _error = null);
     final email = _emailCtrl.text.trim();
 
@@ -68,6 +70,7 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _google() async {
+    Haptics.tap();
     setState(() => _error = null);
     try {
       await SupabaseService.instance.signInWithGoogle();
@@ -224,10 +227,13 @@ class _AuthScreenState extends State<AuthScreen> {
             const SizedBox(height: 14),
             Center(
               child: TextButton(
-                onPressed: () => setState(() {
-                  _isSignup = !_isSignup;
-                  _error = null;
-                }),
+                onPressed: () {
+                  Haptics.selection();
+                  setState(() {
+                    _isSignup = !_isSignup;
+                    _error = null;
+                  });
+                },
                 child: Text(
                   _isSignup
                       ? 'Already have an account? Sign in'
