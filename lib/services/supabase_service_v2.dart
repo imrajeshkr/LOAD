@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:typed_data';
+
+import 'package:supabase_flutter/supabase_flutter.dart' show FileOptions;
 
 import 'supabase_service.dart';
 import '../models/v2_models.dart';
@@ -415,6 +418,107 @@ extension SupabaseServiceV2 on SupabaseService {
     return PhotoPairV2.fromJson(json.cast<String, dynamic>());
   }
 
+  /// Calendar days [from]..[to] (inclusive) on which a session was completed —
+  /// as 'yyyy-MM-dd' keys, for the Progress consistency month grid.
+  Future<Set<String>> fetchTrainingDayKeys(DateTime from, DateTime to) async {
+    final uid = currentUser?.id;
+    if (uid == null) return <String>{};
+    final rows = await client
+        .from('workout_sessions')
+        .select('performed_on')
+        .eq('user_id', uid)
+        .eq('status', 'completed')
+        .gte('performed_on', _dateStr(from))
+        .lte('performed_on', _dateStr(to));
+    final out = <String>{};
+    for (final r in rows as List) {
+      final d = (r as Map)['performed_on'];
+      if (d is String) out.add(d.substring(0, 10));
+    }
+    return out;
+  }
+
+  /// Upload a progress photo (private bucket) and record it. Returns the stored
+  /// object path, or null if not signed in. [bytes] is the image data; [ext] the
+  /// file extension without the dot (e.g. 'jpg'). Bodyweight is not stored here —
+  /// the pair RPC reads it from the weigh-in on the photo's day.
+  Future<String?> uploadProgressPhoto({
+    required Uint8List bytes,
+    String ext = 'jpg',
+    DateTime? takenOn,
+  }) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final day = takenOn ?? DateTime.now();
+    final path = '$uid/${DateTime.now().millisecondsSinceEpoch}.$ext';
+    await client.storage.from('progress-photos').uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(
+            contentType: ext == 'png' ? 'image/png' : 'image/jpeg',
+            upsert: true,
+          ),
+        );
+    await client.from('progress_photos').insert({
+      'user_id': uid,
+      'storage_path': path,
+      'taken_on': _dateStr(day),
+    });
+    return path;
+  }
+
+  /// Every progress photo, oldest-first, each with the bodyweight logged on its
+  /// day (if any) — for the swipable comparison gallery.
+  Future<List<PhotoV2>> fetchAllProgressPhotos() async {
+    final uid = currentUser?.id;
+    if (uid == null) return const [];
+    final rows = await client
+        .from('progress_photos')
+        .select('taken_on, storage_path')
+        .eq('user_id', uid)
+        .order('taken_on', ascending: true)
+        .order('created_at', ascending: true);
+    final wRows = await client
+        .from('body_measurements')
+        .select('measured_on, weight_kg')
+        .eq('user_id', uid);
+    final wByDay = <String, double>{};
+    for (final r in wRows as List) {
+      final d = (r as Map)['measured_on'];
+      final w = r['weight_kg'] as num?;
+      if (d is String && w != null) wByDay[d.substring(0, 10)] = w.toDouble();
+    }
+    final out = <PhotoV2>[];
+    for (final r in rows as List) {
+      final m = r as Map;
+      final on = m['taken_on'] as String?;
+      if (on == null) continue;
+      out.add(PhotoV2(
+        takenOn: DateTime.parse(on),
+        storagePath: m['storage_path'] as String? ?? '',
+        weightKg: wByDay[on.substring(0, 10)],
+      ));
+    }
+    return out;
+  }
+
+  /// Delete one progress photo — the record first (RLS-scoped to the caller),
+  /// then the stored object (best-effort; a leftover blob is harmless).
+  Future<void> deleteProgressPhoto(String storagePath) async {
+    final uid = currentUser?.id;
+    if (uid == null || storagePath.isEmpty) return;
+    await client
+        .from('progress_photos')
+        .delete()
+        .eq('user_id', uid)
+        .eq('storage_path', storagePath);
+    try {
+      await client.storage.from('progress-photos').remove([storagePath]);
+    } catch (_) {
+      // The row is gone; an orphaned object will never be referenced again.
+    }
+  }
+
   /// Short-lived signed URL for a progress photo (private bucket).
   Future<String?> signedPhotoUrl(String path) async {
     if (path.isEmpty) return null;
@@ -523,11 +627,11 @@ extension SupabaseServiceV2 on SupabaseService {
     if (uid == null) return null;
 
     final results = await Future.wait(<Future<dynamic>>[
-      client.from('profiles').select('display_name').eq('id', uid).maybeSingle(),
+      client.from('profiles').select('display_name, avatar_url').eq('id', uid).maybeSingle(),
       client
           .from('training_profiles')
           .select('goals, goal_is_coach_choice, target_weight_kg, '
-              'target_direction, training_weekdays, bar_weight_kg, plate_sizes_kg')
+              'target_direction, training_weekdays, split_preference, bar_weight_kg, plate_sizes_kg')
           .eq('user_id', uid)
           .isFilter('valid_to', null)
           .maybeSingle(),
@@ -546,6 +650,10 @@ extension SupabaseServiceV2 on SupabaseService {
           .isFilter('active_to', null),
       client.rpc('is_training_paused', params: {'p_user_id': uid}),
       client.rpc('progress_gates', params: {'p_user_id': uid}),
+      client
+          .from('program_weekday_slots')
+          .select('weekday, program_days(label)')
+          .eq('user_id', uid),
     ]);
 
     final profile = results[0] as Map<String, dynamic>?;
@@ -555,10 +663,45 @@ extension SupabaseServiceV2 on SupabaseService {
     final constraints = (results[4] as List?) ?? const [];
     final paused = results[5] == true;
     final gates = (results[6] as Map?)?.cast<String, dynamic>() ?? const {};
+    final slots = (results[7] as List?) ?? const [];
+    final weekdaySlots = <int, String>{};
+    for (final s in slots) {
+      final m = s as Map;
+      final wd = (m['weekday'] as num?)?.toInt();
+      final label = (m['program_days'] as Map?)?['label'] as String?;
+      if (wd != null && label != null) weekdaySlots[wd] = label;
+    }
+
+    // Fall back to the sign-in identity (Google fills these in the auth
+    // metadata) when the profile row hasn't been named yet, and backfill it
+    // once so initials and future loads have a real name.
+    final meta = currentUser?.userMetadata ?? const {};
+    var displayName = (profile?['display_name'] as String?)?.trim();
+    // Default to just the first name from the sign-in identity, until the user
+    // edits it to whatever they like.
+    final rawName = ((meta['full_name'] ?? meta['name']) as String?)?.trim();
+    final metaName = (rawName == null || rawName.isEmpty)
+        ? null
+        : rawName.split(RegExp(r'\s+')).first;
+    final avatarUrl = (profile?['avatar_url'] as String?) ??
+        (meta['avatar_url'] ?? meta['picture']) as String?;
+    if ((displayName == null || displayName.isEmpty) &&
+        metaName != null &&
+        metaName.isNotEmpty) {
+      displayName = metaName;
+      unawaited(client
+          .from('profiles')
+          .update({'display_name': metaName})
+          .eq('id', uid)
+          .then((_) {}, onError: (_) {}));
+    }
 
     return ProfileDataV2(
-      displayName: profile?['display_name'] as String?,
+      displayName: (displayName == null || displayName.isEmpty) ? null : displayName,
       email: currentUser?.email,
+      avatarUrl: avatarUrl,
+      splitPreference: tp['split_preference'] as String? ?? 'no_preference',
+      weekdaySlots: weekdaySlots,
       sessionsTotal: (gates['sessions_total'] as num?)?.toInt() ?? 0,
       weeksTraining: (gates['weeks_of_history'] as num?)?.toInt() ?? 0,
       paused: paused,
@@ -643,6 +786,41 @@ extension SupabaseServiceV2 on SupabaseService {
         .update(patch)
         .eq('user_id', uid)
         .isFilter('valid_to', null);
+  }
+
+  /// Set the user's display name.
+  Future<void> updateDisplayName(String name) async {
+    final uid = currentUser?.id;
+    if (uid == null) return;
+    await client.from('profiles').update({'display_name': name.trim()}).eq('id', uid);
+  }
+
+  /// Upload a profile picture to the public `avatars` bucket and point
+  /// profiles.avatar_url at it. Returns the public URL.
+  Future<String?> uploadAvatar({required Uint8List bytes, String ext = 'jpg'}) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final path = '$uid/avatar_${DateTime.now().millisecondsSinceEpoch}.$ext';
+    await client.storage.from('avatars').uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(
+            contentType: ext == 'png' ? 'image/png' : 'image/jpeg',
+            upsert: true,
+          ),
+        );
+    final url = client.storage.from('avatars').getPublicUrl(path);
+    await client.from('profiles').update({'avatar_url': url}).eq('id', uid);
+    return url;
+  }
+
+  /// Swap which session lands on two weekdays — a permanent (every-week)
+  /// rearrange of the split, from the Profile "Your plan" strip.
+  Future<void> swapProgramWeekdays(int weekdayA, int weekdayB) async {
+    await client.rpc('swap_program_weekdays', params: {
+      'p_wf': weekdayA,
+      'p_wt': weekdayB,
+    });
   }
 
   /// Flag a new "working around" area — a real joint+side, or a free-text

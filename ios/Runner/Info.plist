@@ -81,5 +81,9 @@
 		</array>
 		<key>UIStatusBarHidden</key>
 		<false/>
+		<key>NSPhotoLibraryUsageDescription</key>
+		<string>LOAD uses your photos so you can add progress pictures and compare them over time.</string>
+		<key>NSCameraUsageDescription</key>
+		<string>LOAD uses the camera so you can take a progress photo.</string>
 	</dict>
 </plist>

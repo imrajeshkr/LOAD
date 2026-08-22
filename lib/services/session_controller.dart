@@ -9,7 +9,7 @@ enum FlowScreen { lift, review, done }
 
 /// A lift's state on the live rail / board — no lift is "next", each just
 /// shows where it stands.
-enum LiftState { untouched, inProgress, done, deferred }
+enum LiftState { untouched, inProgress, done, deferred, skipped }
 
 /// One logged set, in progress or committed.
 class SetRow {
@@ -46,6 +46,7 @@ class SessionController extends ChangeNotifier {
     _extra = List.filled(exercises.length, 0);
     _unconfirmed = List.filled(exercises.length, false);
     _order = List.generate(exercises.length, (i) => i);
+    _skipped = List.filled(exercises.length, false);
 
     // Rehydrate from what's already logged, so "Continue session" actually
     // continues — otherwise every resume silently started blank at lift one.
@@ -84,6 +85,10 @@ class SessionController extends ChangeNotifier {
   /// the underlying lists. Identity until the lifter drags.
   late List<int> _order;
   bool _orderDirty = false; // reordered this session, not yet "made the plan"
+
+  /// Lifts the lifter skipped today — dropped from the session, not counted as
+  /// missed, restorable from the board.
+  late List<bool> _skipped;
 
   bool cuesOpen = true;
   bool askFeel = false;
@@ -155,10 +160,39 @@ class SessionController extends ChangeNotifier {
 
   /// Where a lift stands — drives the rail/board, no lift is "next".
   LiftState liftState(int i) {
+    if (_skipped[i]) return LiftState.skipped;
     if (_entry[i] == EntryModeV2.deferred && _sets[i].isEmpty) return LiftState.deferred;
     if (_sets[i].isEmpty) return LiftState.untouched;
     if (_sets[i].length >= target(i)) return LiftState.done;
     return LiftState.inProgress;
+  }
+
+  bool isSkipped(int i) => _skipped[i];
+
+  /// Drop a lift from today: not counted as missed, not auto-filled at the end.
+  /// Any sets already logged are cleared from the record; restore brings it
+  /// back. Then move on to the next open lift (or finish).
+  Future<void> skipLift() async {
+    Haptics.tap();
+    final i = idx;
+    _skipped[i] = true;
+    _entry[i] = null;
+    _effort[i] = null;
+    _unconfirmed[i] = false;
+    askFeel = false;
+    _stopRest();
+    if (_sets[i].isNotEmpty) {
+      _sets[i] = [];
+      await _persistExercise(); // clears any written sets for this lift
+    }
+    advance();
+  }
+
+  /// Un-skip a lift so it re-joins the session (from the board).
+  void restoreLift(int i) {
+    if (!_skipped[i]) return;
+    _skipped[i] = false;
+    notifyListeners();
   }
 
   bool _isOpenLift(int i) {

@@ -166,6 +166,11 @@ class WeekDayV2 {
   /// once the `train_screen` RPC returns it — older deployments give null,
   /// which the calendar just renders as an untagged day.
   final String? label;
+  /// The scheduled program day's id, null on rest days. Used by the swap RPC.
+  final String? programDayId;
+  /// The day's lift list, for the in-place preview. Provisional loads; empty on
+  /// rest days and on older deployments that don't return it.
+  final List<UpcomingExerciseV2> exercises;
   const WeekDayV2({
     required this.date,
     required this.dow,
@@ -173,7 +178,13 @@ class WeekDayV2 {
     required this.trained,
     required this.isToday,
     this.label,
+    this.programDayId,
+    this.exercises = const [],
   });
+
+  /// No session scheduled on this day.
+  bool get isRest => label == null || label!.isEmpty;
+
   factory WeekDayV2.fromJson(Map<String, dynamic> j) => WeekDayV2(
         date: DateTime.parse(j['date'] as String),
         dow: (j['dow'] as num).toInt(),
@@ -181,15 +192,27 @@ class WeekDayV2 {
         trained: j['trained'] as bool? ?? false,
         isToday: j['is_today'] as bool? ?? false,
         label: j['label'] as String?,
+        programDayId: j['program_day_id'] as String?,
+        exercises: ((j['exercises'] as List?) ?? const [])
+            .cast<Map<String, dynamic>>()
+            .map(UpcomingExerciseV2.fromJson)
+            .toList(),
       );
 
-  WeekDayV2 copyWith({String? label}) => WeekDayV2(
+  WeekDayV2 copyWith({
+    String? label,
+    String? programDayId,
+    List<UpcomingExerciseV2>? exercises,
+  }) =>
+      WeekDayV2(
         date: date,
         dow: dow,
         planned: planned,
         trained: trained,
         isToday: isToday,
         label: label ?? this.label,
+        programDayId: programDayId ?? this.programDayId,
+        exercises: exercises ?? this.exercises,
       );
 }
 
@@ -599,6 +622,11 @@ class LiftStatusV2 {
   final double netChangeKg;
   final String status; // insufficient | stalled | progressing | no_change
   final List<double> e1rmSeries; // oldest-first, for the sparkline
+  /// Dated e1rm points (oldest-first), so a tile can slice to its own window
+  /// client-side without another round-trip. Parsed from the same series.
+  final List<(DateTime, double)> e1rmPoints;
+  /// Dated top-set points, for the top-weight readout per window.
+  final List<(DateTime, double)> topPoints;
 
   const LiftStatusV2({
     required this.exerciseId,
@@ -611,12 +639,19 @@ class LiftStatusV2 {
     required this.netChangeKg,
     required this.status,
     required this.e1rmSeries,
+    this.e1rmPoints = const [],
+    this.topPoints = const [],
   });
 
   bool get stalled => status == 'stalled';
 
   factory LiftStatusV2.fromJson(Map<String, dynamic> j) {
     final rawSeries = (j['series'] as List?) ?? const [];
+    final maps = rawSeries.whereType<Map>().toList();
+    DateTime? on(Map p) {
+      final v = p['on'];
+      return v is String ? DateTime.tryParse(v) : null;
+    }
     return LiftStatusV2(
       exerciseId: j['exercise_id'] as String,
       name: j['exercise_name'] as String? ?? '',
@@ -627,10 +662,15 @@ class LiftStatusV2 {
       streakTopHits: (j['streak_top_hits'] as num?)?.toInt() ?? 0,
       netChangeKg: (j['net_change_kg'] as num?)?.toDouble() ?? 0,
       status: j['status'] as String? ?? 'insufficient',
-      e1rmSeries: rawSeries
-          .whereType<Map>()
-          .map((p) => (p['e1rm'] as num?)?.toDouble() ?? 0)
-          .toList(),
+      e1rmSeries: maps.map((p) => (p['e1rm'] as num?)?.toDouble() ?? 0).toList(),
+      e1rmPoints: [
+        for (final p in maps)
+          if (on(p) != null) (on(p)!, (p['e1rm'] as num?)?.toDouble() ?? 0)
+      ],
+      topPoints: [
+        for (final p in maps)
+          if (on(p) != null) (on(p)!, (p['top_kg'] as num?)?.toDouble() ?? 0)
+      ],
     );
   }
 }
@@ -848,6 +888,7 @@ class ConstraintV2 {
 class ProfileDataV2 {
   final String? displayName;
   final String? email;
+  final String? avatarUrl;
   final int sessionsTotal;
   final int weeksTraining;
   final bool paused;
@@ -856,6 +897,11 @@ class ProfileDataV2 {
   final double? targetWeightKg;
   final String? targetDirection; // lose | maintain | gain | declined
   final List<int> trainingWeekdays; // ISO 1=Mon..7=Sun
+  /// Chosen split: push_pull_legs | upper_lower | full_body | no_preference.
+  final String splitPreference;
+  /// Weekday (ISO 1=Mon..7=Sun) → the session label the plan puts there
+  /// ("Push day", "Upper body", …). Empty on rest weekdays / older payloads.
+  final Map<int, String> weekdaySlots;
   final double barWeightKg;
   final List<double> plateSizes;
   final double? latestWeightKg;
@@ -865,6 +911,7 @@ class ProfileDataV2 {
   const ProfileDataV2({
     required this.displayName,
     required this.email,
+    this.avatarUrl,
     required this.sessionsTotal,
     required this.weeksTraining,
     required this.paused,
@@ -873,6 +920,8 @@ class ProfileDataV2 {
     required this.targetWeightKg,
     required this.targetDirection,
     required this.trainingWeekdays,
+    this.splitPreference = 'no_preference',
+    this.weekdaySlots = const {},
     required this.barWeightKg,
     required this.plateSizes,
     required this.latestWeightKg,
