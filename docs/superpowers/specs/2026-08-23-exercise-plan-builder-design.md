@@ -277,8 +277,8 @@ stateDiagram-v2
     [*] --> Beginner
     Beginner --> Intermediate: auto-proposed
     Intermediate --> Advanced: proposed, needs intent
-    Intermediate --> Returning: 6+ weeks untrained
-    Advanced --> Returning: 6+ weeks untrained
+    Intermediate --> Returning: pause, or 3+ weeks silent
+    Advanced --> Returning: pause, or 3+ weeks silent
     Returning --> Intermediate: ramp complete
     Returning --> Advanced: ramp complete
 ```
@@ -289,9 +289,9 @@ stateDiagram-v2
 2. ≥8 weeks of logged training, **and**
 3. the stall survived one deload — proving it's adaptation, not fatigue.
 
-**Intermediate → Advanced.** Deliberately *not* automatic. Signals worth surfacing (≥18 months consistent, main lifts gaining < ~1 kg/month, strength standards relative to bodyweight), but advanced means opting into more volume and scheduled deloads. That needs intent, so we suggest and let the user confirm.
+**Intermediate → Advanced.** Deliberately *not* automatic. Signals worth surfacing (≥18 months consistent, main lifts gaining < ~1 kg/month, strength standards relative to bodyweight), but advanced means more volume and scheduled deloads. That needs consent — and per §13.7 we ask for consent to the *behaviour* ("a lighter week every fourth week, and a bit more volume"), never to the label.
 
-**No automatic demotion.** A long layoff doesn't make someone a beginner again — it makes them a trained person who is detrained. That's the `Returning` state: keep the level, re-ramp volume and loads (§8.3), exit the ramp back to where they were.
+**No automatic demotion.** Thresholds and return behaviour differ for a declared pause vs. silent absence — see §13.8. A long layoff doesn't make someone a beginner again — it makes them a trained person who is detrained. That's the `Returning` state: keep the level, re-ramp volume and loads (§8.3), exit the ramp back to where they were.
 
 ### 8.2 A transition is a proposal, never an ambush
 
@@ -391,6 +391,10 @@ ALTER TABLE program_day_exercises
   ADD COLUMN swapped_from_exercise_id uuid REFERENCES exercises(id),
   ADD COLUMN is_user_choice boolean NOT NULL DEFAULT false;
 
+-- programs: which generator built this, so §13.1 can migrate in waves
+ALTER TABLE programs
+  ADD COLUMN generator_version int NOT NULL DEFAULT 1;
+
 -- new: volume targets, so tuning doesn't need a migration
 CREATE TABLE volume_targets (
   experience experience_level NOT NULL,
@@ -428,13 +432,114 @@ Phase 0 is worth doing immediately and independently — it's a live bug behind 
 
 ---
 
-## 13. Open questions
+## 13. Decisions
 
-1. **Regeneration on rollout.** Phase 3 changes every plan. Auto-regenerate, or prompt each user ("your plan can be rebuilt with what we now know")? Prompting is safer but leaves users on the old logic.
-2. **Core set membership.** Who picks the ~150? I can propose a list from muscle × equipment coverage for review.
-3. **Images.** Mirror the dataset's 1,700 images to our bucket, or hot-link GitHub? Mirroring costs storage; hot-linking risks the repo moving.
-4. **`general_health` goal** currently has no distinct training meaning — is it a real goal or a "no strong preference" signal?
-5. **Deload** doesn't exist anywhere in the app yet — Phase 4 introduces the concept to the user, which needs UI language.
-6. **Promotion cadence.** How often do we test for a level transition — nightly, or on session finish? And how often may we re-ask after a decline (§8.2 assumes 4 weeks)?
-7. **Do we ever tell a user they're advanced?** §8.1 makes intermediate → advanced user-confirmed. Alternative: drop the advanced tier from the UI entirely and treat it as an internal parameter set, so nobody self-selects into more volume than they can recover from.
-8. **Returning-user threshold.** §8.1 uses 6 weeks untrained. The app already has an explicit "pause training" feature — should a *declared* pause behave differently from silently disappearing for 6 weeks?
+The eight open questions from the first draft, resolved.
+
+### 13.1 Rollout — lazy migration, never mid-week
+
+Neither "auto-regenerate everyone" nor "prompt and wait." Both are wrong at the edges: the first rewrites a week someone has already organised their life around, the second strands users on logic we know is worse.
+
+| User | Behaviour |
+|---|---|
+| New | New generator immediately |
+| Existing, plan **actively broken** (the `upper_lower`/`full_body` users from §1) | **Force-rebuild, no prompt** — but only at a week boundary, and tell them after |
+| Existing, plan fine | Keep running until a natural boundary, then offer: *"I've learned more about building your week. Want me to rebuild it?"* |
+
+"Natural boundary" = the next time they change something that triggers a rebuild anyway, or a week boundary — never mid-week.
+
+This needs a `generator_version` column on `programs` so we can tell who is on what and migrate in waves rather than one big-bang.
+
+**Principle:** silently changing what someone has planned their week around is a trust violation. Silently leaving a *broken* plan in place is a worse one.
+
+### 13.2 Core membership — derived from coverage, not taste
+
+Don't hand-pick 150 exercises from intuition. Build a coverage matrix and let the list fall out of it:
+
+**18 muscles × 3 environments × {compound, isolation}**, requiring **≥2 options per cell** (so swap always has somewhere to go) and **≥3 for the major movers** (chest, back, quads, hams, glutes, delts).
+
+That mechanically produces ~120–160. Rank candidates within each cell by: *already in our 36* → compound → common equipment → beginner-accessible.
+
+The existing 36 are **automatically Core** — they're already enriched *and* hand-illustrated. Review then only covers cells where the matrix picked something questionable, which is a few dozen judgement calls, not 150.
+
+### 13.3 Images — keep ours, use theirs to fill the gap
+
+To answer the question directly: they're **photographs of a person performing the lift** — two per exercise (start and end position), 850×567 JPEG, ~73KB. Coverage is **619/619** for the strength set, so every imported exercise has both.
+
+**But don't replace what we have.** Our 36 exercises already have 100%-covered hand-made anatomical illustrations (`.webp`, with the worked muscles highlighted). Those teach *which muscle this trains* — a stock gym photo cannot. Swapping them for photos is a downgrade.
+
+| Exercise set | Guide asset |
+|---|---|
+| Existing 36 (Core) | **Keep** the anatomical illustrations |
+| ~580 newly imported | Dataset photos |
+| Future Core promotions | Commission an illustration; photo until then |
+
+Result: 100% guide coverage, best asset per exercise, nothing good thrown away.
+
+**Mirror, don't hot-link.** 619 × 2 × ~73KB ≈ **90MB**, trivial against the progress-photo bucket, and converting to `.webp` (as our existing guides already are) will cut it substantially. Hot-linking makes our exercise guides break if someone renames a folder in a repo we don't control.
+
+### 13.4 `general_health` is a signal, not a goal
+
+It has no distinct prescription — there is no rep range that means "health," and inventing one would be fake precision.
+
+Treat it as **"no strong preference"**: the fallback template (balanced, 8–15 reps, low end of the volume budget). When it's picked *alongside* other goals it contributes nothing and is ignored; the other goals lead. It stays in the UI because "I just want to train sensibly" is a real and common answer — it simply maps to a sensible default rather than its own row in the volume table.
+
+### 13.5 Deload — build the mechanic, hide the word
+
+Yes, it's needed: advanced training doesn't work without it, and §8.1's promotion test literally depends on "the stall survived a deload."
+
+But **never show the user the word "deload."** It reads as the app making them go backwards. Present the *reason and the action*:
+
+> Your bench has sat at 80 kg for three sessions. This week I'm dropping it about 10% so you can come back at it with something left in the tank.
+
+Two rules:
+
+- **Reactive first** (auto-trigger on a stall, Phase 4), **scheduled second** (planned block deloads, Phase 7). Reactive is easier to justify to a user because there's visible evidence.
+- **Always skippable.** Forcing a light week on someone who feels great costs more trust than the deload gains.
+
+### 13.6 Promotion cadence — evaluate on finish, notify at a boundary
+
+**Evaluate on session finish.** The data just changed, the check is cheap, and it needs no cron.
+
+**Notify separately from evaluating.** Never interrupt a session with a level-change proposal — surface it in the morning note or at the next session start. And **apply at a week boundary**, since a level change moves weekly volume.
+
+**Re-asking after a decline:** don't re-ask on a fixed timer — re-ask when the *evidence strengthens* (a third lift stalls), capped at one proposal per 4 weeks. After two declines, stop asking for 12 weeks. A coach who keeps asking the same question is nagging, not coaching.
+
+### 13.7 Never show the tier — describe the change instead
+
+Agreed: the label stays internal. Three reasons it should never surface:
+
+1. Self-selection is biased — offered the choice, most people pick "advanced," which is exactly the group that then can't recover from the volume.
+2. "You are a beginner" is demotivating and, for someone six months in, insulting.
+3. The label carries no information the user can act on.
+
+So: **ask behaviourally, never by identity.** Onboarding already asks "how long have you trained consistently?" rather than "are you a beginner?" — keep that framing everywhere.
+
+This also dissolves §8.1's awkwardness about intermediate → advanced needing consent. **Consent to the behaviour, not the tier:**
+
+> I'd like to add a lighter week every fourth week and push your volume up a little. Want me to?
+
+That's answerable. "Do you want to become advanced?" is not.
+
+### 13.8 A declared pause is information; silence is not
+
+They should absolutely behave differently — the difference is **how much we know**.
+
+| | Declared pause | Silent absence |
+|---|---|---|
+| We know | Why, and how long | Nothing |
+| Consistency metric | Already excluded | Excluded retroactively |
+| Threshold | The actual pause length | **3 weeks** (cautious, since we're guessing) |
+| On return | Deterministic ramp from pause length, loads kept, no questions | **Ask one question** |
+| Tone | *"Welcome back — picking up where you left off."* | *"Good to see you. Pick up where you left off, or ease in?"* |
+
+We use 3 weeks for silence rather than §8.1's 6 because meaningful detraining starts around 3–4 weeks and, absent information, the cautious default is better. A user who was actually fine just taps "pick up where I left off."
+
+The reward for using the pause feature is that we never ask — which is a real incentive to use it.
+
+---
+
+## 14. Still open
+
+- **Guide illustration pipeline.** §13.3 keeps illustrations for Core, but there's no process for producing new ones as exercises get promoted. Commission, generate, or accept photos indefinitely?
+- **Volume-table tuning.** The numbers in §6 are defensible starting points, not measured. Once Progress has real per-muscle data across users, they should be revisited.
