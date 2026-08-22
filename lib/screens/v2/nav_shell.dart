@@ -4,6 +4,7 @@ import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/pressable.dart';
 import 'train_screen.dart';
 import 'progress_screen.dart';
 import 'profile_screen.dart';
@@ -77,8 +78,17 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
     } catch (_) {/* a missing badge is harmless */}
   }
 
+  static const _trainIndex = 0;
+
   void _onTab(int i) {
     if (i != _index) Haptics.selection();
+    // Leaving Train dismisses the post-session "next time these go up" card
+    // for the rest of the day (it shows right after finishing, then gets out
+    // of the way).
+    if (_index == _trainIndex && i != _trainIndex) {
+      trainProgressionDismissedOn = DateTime.now();
+    }
+    final leavingTrainer = _index == _trainerIndex && i != _trainerIndex;
     setState(() {
       _index = i;
       // Opening the Trainer tab reads the thread, so drop the badge at once.
@@ -91,7 +101,20 @@ class _NavShellState extends State<NavShell> with WidgetsBindingObserver {
     // what surfaces a note written while they were elsewhere (a session
     // debrief the moment they finish, say). Skipped when opening Trainer so the
     // optimistic clear above doesn't flicker back before the read lands.
-    if (i != _trainerIndex) _refreshUnread();
+    if (i != _trainerIndex) {
+      // On the way out of Trainer, persist "read" for the whole thread first,
+      // THEN recount. The Trainer tab is kept alive in the IndexedStack and
+      // only self-marks on scroll/first-load, so a note that arrived while it
+      // sat open would otherwise still count as unread and re-light the dot.
+      leavingTrainer ? _markReadThenRefresh() : _refreshUnread();
+    }
+  }
+
+  Future<void> _markReadThenRefresh() async {
+    try {
+      await SupabaseService.instance.markCoachThreadRead();
+    } catch (_) {/* recount below still self-corrects */}
+    await _refreshUnread();
   }
 
   @override
@@ -175,8 +198,9 @@ class _NavTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return Expanded(
       flex: active ? 19 : 10,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
+      child: Pressable(
+        haptic: PressFx.none, // _onTab fires the selection haptic on change
+        scale: 0.97,
         onTap: onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 300),

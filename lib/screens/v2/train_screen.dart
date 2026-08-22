@@ -7,9 +7,20 @@ import '../../services/supabase_service_v2.dart';
 import '../../services/session_controller.dart';
 import '../../services/haptics.dart';
 import '../../theme/app_colors.dart';
+import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/v2_widgets.dart';
 import 'session_flow_screen.dart';
+
+/// The calendar day the user last left the Train tab on. The post-session
+/// "next time these go up" card shows right after finishing and stays until
+/// the user navigates away from Train once, then hides for the rest of the day
+/// (set by [NavShell] on tab-away). Resets on app restart — acceptable, the
+/// card just reappears once more that day.
+DateTime? trainProgressionDismissedOn;
+
+bool _sameDay(DateTime? a, DateTime b) =>
+    a != null && a.year == b.year && a.month == b.month && a.day == b.day;
 
 /// The real Train tab. Three faces off one payload:
 ///   • training day, not done → plan + morning note + Start (before-state)
@@ -29,6 +40,10 @@ class _TrainTabState extends State<TrainTab> {
   List<ProgressionV2> _progressions = const [];
   String? _error;
   bool _loading = true;
+
+  /// Which future day's plan is being previewed in place; null = today's view.
+  /// A date, not an index, so it survives a swap and a background reconcile.
+  DateTime? _previewDate;
 
   @override
   void initState() {
@@ -64,6 +79,9 @@ class _TrainTabState extends State<TrainTab> {
       // Surfacing the note counts as reading it.
       final note = _note;
       if (note != null && note.readAt == null) svc.markNoteRead(note.id);
+      // Keep the calendar rolling ~5 weeks ahead. Fire-and-forget: today and
+      // the near term already exist, so this load never waits on it.
+      svc.ensureSchedule();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -138,6 +156,164 @@ class _TrainTabState extends State<TrainTab> {
     if (mounted) _load();
   }
 
+  // ── day preview (#4) ──────────────────────────────────────────────────────
+
+  /// The week day being previewed, re-derived from the current plan so it
+  /// follows a swap or a background reconcile rather than going stale.
+  WeekDayV2? get _previewDay {
+    final d = _previewDate;
+    final plan = _plan;
+    if (d == null || plan == null) return null;
+    for (final w in plan.week) {
+      if (_sameDate(w.date, d)) return w;
+    }
+    return null;
+  }
+
+  /// Tapping a chip: a future day opens its preview, today clears it, the past
+  /// does nothing.
+  void _onTapDay(WeekDayV2 d) {
+    final plan = _plan;
+    if (plan == null) return;
+    if (d.isToday) {
+      _clearPreview();
+      return;
+    }
+    final today = DateTime(plan.today.year, plan.today.month, plan.today.day);
+    final dd = DateTime(d.date.year, d.date.month, d.date.day);
+    if (dd.isAfter(today)) {
+      Haptics.selection();
+      setState(() => _previewDate = d.date);
+    }
+  }
+
+  void _clearPreview() {
+    if (_previewDate == null) return;
+    Haptics.selection();
+    setState(() => _previewDate = null);
+  }
+
+  // ── calendar day swap / move (#4) ─────────────────────────────────────────
+
+  /// A day dropped onto another (drag or picker). Confirm the scope, then apply
+  /// optimistically with a toast + Undo.
+  Future<void> _onDaySwap(WeekDayV2 from, WeekDayV2 to) async {
+    if (from.date == to.date) return;
+    Haptics.selection();
+    final scope = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _MoveSheet(from: from, to: to),
+    );
+    if (scope == null || !mounted) return; // "Leave it where it was"
+    await _applySwap(from.date, to.date, scope, announce: true);
+  }
+
+  /// The non-gestural route: pick a target day from a list, then confirm scope.
+  Future<void> _openPicker(WeekDayV2 source) async {
+    final plan = _plan;
+    if (plan == null) return;
+    final target = await showModalBottomSheet<WeekDayV2>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _PickerSheet(week: plan.week, source: source, today: plan.today),
+    );
+    if (target == null || !mounted) return;
+    await _onDaySwap(source, target);
+  }
+
+  Future<void> _applySwap(DateTime a, DateTime b, String scope,
+      {required bool announce}) async {
+    final moved = _swapSessionsLocally(a, b);
+    try {
+      await SupabaseService.instance.swapScheduledDays(a, b, scope);
+      Haptics.success();
+      if (announce && moved != null) {
+        _showSwapToast(moved.$1, moved.$2, scope, undo: () => _applySwap(b, a, scope, announce: false));
+      }
+      // Reconcile quietly so today re-derives and an every-week ripple shows,
+      // without flashing the whole tab back to a spinner.
+      await _reloadQuietly();
+    } catch (e) {
+      Haptics.error();
+      _snack("Couldn't move that — putting it back.");
+      _load(); // reconcile against the server
+    }
+  }
+
+  /// Swap the two days' sessions optimistically (lifts travel with the day).
+  /// A move onto a rest day leaves the origin a rest day. Returns the two
+  /// resulting labels for toast copy (session name, moved-to day), or null.
+  (String, String)? _swapSessionsLocally(DateTime a, DateTime b) {
+    final plan = _plan;
+    if (plan == null) return null;
+    WeekDayV2? da, db;
+    for (final d in plan.week) {
+      if (_sameDate(d.date, a)) da = d;
+      if (_sameDate(d.date, b)) db = d;
+    }
+    if (da == null || db == null) return null;
+    final week = [
+      for (final d in plan.week)
+        _sameDate(d.date, a)
+            ? _withSession(d, db)
+            : _sameDate(d.date, b)
+                ? _withSession(d, da)
+                : d,
+    ];
+    setState(() => _plan = plan.copyWith(week: week));
+    // For the toast: name the session and where it landed.
+    final session = da.isRest ? db.label : da.label;
+    final landedOn = da.isRest ? a : b;
+    return (session ?? 'Session', _dayLabel(landedOn));
+  }
+
+  /// A copy of [target] carrying [src]'s session (label, program day, lifts).
+  /// Built by hand rather than copyWith so a rest source can clear the target.
+  static WeekDayV2 _withSession(WeekDayV2 target, WeekDayV2 src) => WeekDayV2(
+        date: target.date,
+        dow: target.dow,
+        planned: !src.isRest,
+        trained: target.trained,
+        isToday: target.isToday,
+        label: src.label,
+        programDayId: src.programDayId,
+        exercises: src.exercises,
+      );
+
+  Future<void> _reloadQuietly() async {
+    try {
+      final plan = await SupabaseService.instance.fetchTrainScreen();
+      if (mounted && plan != null) setState(() => _plan = plan);
+    } catch (_) {
+      // The optimistic state stands; a manual refresh will reconcile.
+    }
+  }
+
+  static String _dayLabel(DateTime d) => '${_weekdayShort(d)} ${d.day}';
+
+  static bool _sameDate(DateTime x, DateTime y) =>
+      x.year == y.year && x.month == y.month && x.day == y.day;
+
+  void _showSwapToast(String session, String landedOn, String scope,
+      {required VoidCallback undo}) {
+    if (!mounted) return;
+    final scopeLabel = scope == 'forever' ? 'every week from now' : 'this week';
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text('$session → $landedOn · $scopeLabel.'),
+        action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () {
+              Haptics.selection();
+              undo();
+            }),
+      ));
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -147,9 +323,12 @@ class _TrainTabState extends State<TrainTab> {
       return _ErrorState(message: _error ?? 'Not signed in.', onRetry: _load);
     }
     final plan = _plan!;
+    final preview = _previewDay;
+    final inPreview = preview != null;
     // Start/Continue floats above the list rather than living at the bottom
     // of the exercise cards — with a long plan it was scrolling out of reach.
-    final showStartBar = _summary == null && !plan.isRest;
+    // In a preview the (disabled) start button sits inline instead.
+    final showStartBar = !inPreview && _summary == null && !plan.isRest;
     return SafeArea(
       bottom: false,
       child: Stack(
@@ -161,11 +340,24 @@ class _TrainTabState extends State<TrainTab> {
             child: ListView(
               padding: EdgeInsets.fromLTRB(20, 16, 20, showStartBar ? 96 : 8),
               children: [
-                _Header(plan: plan, summary: _summary),
+                _Header(
+                  plan: plan,
+                  summary: _summary,
+                  preview: preview,
+                  onToday: _clearPreview,
+                ),
                 const SizedBox(height: 16),
-                _WeekCalendar(week: plan.week),
+                _WeekCalendar(
+                  week: plan.week,
+                  today: plan.today,
+                  selected: _previewDate,
+                  onSwap: _onDaySwap,
+                  onTapDay: _onTapDay,
+                ),
                 const SizedBox(height: 16),
-                if (_summary != null)
+                if (inPreview)
+                  ..._previewState(preview)
+                else if (_summary != null)
                   ..._afterState(plan, _summary!)
                 else if (plan.isRest)
                   ..._restState(plan)
@@ -187,6 +379,52 @@ class _TrainTabState extends State<TrainTab> {
         ],
       ),
     );
+  }
+
+  // ── PREVIEW: a future day, in place ───────────────────────────────────────
+  List<Widget> _previewState(WeekDayV2 day) {
+    if (day.isRest) {
+      return [
+        const _RestCard(),
+        const SizedBox(height: 16),
+        _PreviewSwapAction(
+          label: 'Move a session here',
+          onTap: () => _openPicker(day),
+        ),
+        const SizedBox(height: 24),
+      ];
+    }
+    return [
+      Text('${day.exercises.length} exercises',
+          style: const TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+              letterSpacing: 0.3,
+              color: AppColors.textMuted)),
+      const SizedBox(height: 10),
+      for (final e in day.exercises) ...[
+        _TomorrowLiftRow(ex: e),
+        const SizedBox(height: 7),
+      ],
+      if (day.exercises.isEmpty)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 12),
+          child: Text('Lifts land here once the plan settles.',
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
+        ),
+      const SizedBox(height: 8),
+      _DisabledStartButton(day: day.date),
+      const SizedBox(height: 12),
+      _CoachLine(text: _coachTipFor(day.label ?? '')),
+      const SizedBox(height: 12),
+      _PreviewSwapAction(
+        label: 'Swap with another day',
+        onTap: () => _openPicker(day),
+      ),
+      const SizedBox(height: 24),
+    ];
   }
 
   // ── BEFORE: training day ──────────────────────────────────────────────────
@@ -242,7 +480,8 @@ class _TrainTabState extends State<TrainTab> {
           const SizedBox(height: 16),
           _PbCard(pb: pb),
         ],
-        if (_progressions.any((p) => p.reason != 'no_history')) ...[
+        if (!_sameDay(trainProgressionDismissedOn, plan.today) &&
+            _progressions.any((p) => p.reason != 'no_history')) ...[
           const SizedBox(height: 16),
           _ProgressionCard(
               rows: _progressions.where((p) => p.reason != 'no_history').toList()),
@@ -268,10 +507,46 @@ class _TrainTabState extends State<TrainTab> {
 class _Header extends StatelessWidget {
   final TrainScreenV2 plan;
   final SessionSummaryV2? summary;
-  const _Header({required this.plan, required this.summary});
+  /// The day being previewed, if any — retitles the header and shows the
+  /// "Today" pill without navigating away.
+  final WeekDayV2? preview;
+  final VoidCallback onToday;
+  const _Header({
+    required this.plan,
+    required this.summary,
+    required this.preview,
+    required this.onToday,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final p = preview;
+    if (p != null) {
+      final title = p.isRest ? 'Rest day' : (p.label ?? 'Session');
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${_relativeLabel(p.date, plan.today)} · ${_fmtDate(p.date)}'.toUpperCase(),
+                    style: const TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontSize: 10.5,
+                        letterSpacing: 0.7,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.accent)),
+                const SizedBox(height: 5),
+                Text(title, style: Theme.of(context).textTheme.headlineMedium),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          _TodayPill(onTap: onToday),
+        ],
+      );
+    }
     final title = summary?.label ?? (plan.isRest ? 'Rest day' : (plan.label ?? 'Train'));
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -290,21 +565,85 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// Week calendar: each day shows date, split tag, and one of five states —
-/// done (trained), missed (planned, past, not trained), today-pending
-/// (planned today, not yet trained), upcoming (planned, dashed), rest (flat).
-class _WeekCalendar extends StatelessWidget {
-  final List<WeekDayV2> week;
-  const _WeekCalendar({required this.week});
-
-  static bool _isPast(DateTime d) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    return DateTime(d.year, d.month, d.day).isBefore(today);
+/// Header pill during a preview — clears it and returns to today's view.
+class _TodayPill extends StatelessWidget {
+  final VoidCallback onTap;
+  const _TodayPill({required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          border: Border.all(color: AppColors.border),
+          borderRadius: BorderRadius.circular(17),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            Icon(Icons.today_rounded, size: 14, color: AppColors.accent),
+            SizedBox(width: 5),
+            Text('Today',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 10.5,
+                    color: AppColors.accent)),
+          ],
+        ),
+      ),
+    );
   }
+}
+
+/// "Today" / "Tomorrow" / "In N days" for a future date vs today.
+String _relativeLabel(DateTime d, DateTime today) {
+  final t = DateTime(today.year, today.month, today.day);
+  final dd = DateTime(d.year, d.month, d.day);
+  final days = dd.difference(t).inDays;
+  if (days == 0) return 'Today';
+  if (days == 1) return 'Tomorrow';
+  if (days == -1) return 'Yesterday';
+  if (days < 0) return '${-days} days ago';
+  return 'In $days days';
+}
+
+/// One coaching line per split type, for a future day's preview.
+String _coachTipFor(String label) {
+  final s = label.toLowerCase();
+  if (s.contains('leg') || s.contains('lower')) {
+    return 'Give the hips five easy minutes before you load anything — your first squat set should feel like a warm-up, not a test.';
+  }
+  if (s.contains('push') || s.contains('upper')) {
+    return 'Get the shoulders moving first — a couple of easy band pull-aparts or arm circles before the first pressing set.';
+  }
+  if (s.contains('pull')) {
+    return 'A light set of rows or a short deadhang wakes up the grip and back before you load the bar.';
+  }
+  return 'Loads below are provisional until you log set one — the plan adjusts to what actually happens.';
+}
+
+/// Week calendar: each day shows date, split tag, and one of six states —
+/// done (trained), missed (planned, past, not trained), today-pending, today-
+/// rest (today, no session), upcoming (dashed), rest. Tap a future day to
+/// preview it; hold a training day and drop it on another to swap or move.
+class _WeekCalendar extends StatefulWidget {
+  final List<WeekDayV2> week;
+  final DateTime today;
+  final DateTime? selected;
+  final Future<void> Function(WeekDayV2 from, WeekDayV2 to) onSwap;
+  final void Function(WeekDayV2 day) onTapDay;
+  const _WeekCalendar({
+    required this.week,
+    required this.today,
+    required this.selected,
+    required this.onSwap,
+    required this.onTapDay,
+  });
 
   static String _tag(String? label) {
-    if (label == null || label.isEmpty) return '';
+    if (label == null || label.isEmpty) return 'REST';
     final s = label.toLowerCase();
     if (s.startsWith('push')) return 'PUSH';
     if (s.startsWith('pull')) return 'PULL';
@@ -317,16 +656,44 @@ class _WeekCalendar extends StatelessWidget {
   }
 
   @override
+  State<_WeekCalendar> createState() => _WeekCalendarState();
+}
+
+class _WeekCalendarState extends State<_WeekCalendar> {
+  DateTime? _dragFrom;
+
+  DateTime get _today =>
+      DateTime(widget.today.year, widget.today.month, widget.today.day);
+
+  bool _isPast(DateTime d) =>
+      DateTime(d.year, d.month, d.day).isBefore(_today);
+
+  /// Today or later, and — for today — not already trained (a logged day is
+  /// settled). Governs both drag and drop eligibility.
+  bool _movable(WeekDayV2 d) {
+    if (_isPast(d.date)) return false;
+    if (d.isToday && d.trained) return false;
+    return true;
+  }
+
+  bool _canPickUp(WeekDayV2 d) => _movable(d) && !d.isRest; // nothing to lift on a rest day
+  bool _canDropOn(WeekDayV2 d) => _movable(d); // rest days accept a move
+
+  static bool _same(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  @override
   Widget build(BuildContext context) {
+    final week = widget.week;
     final planned = week.where((d) => d.planned).toList();
     final done = planned.where((d) => d.trained).length;
-    final missed = planned.where((d) => !d.trained && !d.isToday && _isPast(d.date)).length;
-    // Trained on a day that wasn't actually scheduled — real effort, but it
-    // can't count toward "X of Y" without breaking that math (Y is the plan).
+    final missed =
+        planned.where((d) => !d.trained && !d.isToday && _isPast(d.date)).length;
     final extra = week.where((d) => d.trained && !d.planned).length;
     final tally = '$done of ${planned.length} done'
         '${extra > 0 ? ' · +$extra extra' : ''}'
         '${missed > 0 ? ' · $missed missed' : ''}';
+    final dragging = _dragFrom != null;
 
     return V2Card(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
@@ -356,9 +723,42 @@ class _WeekCalendar extends StatelessWidget {
           Row(
             children: [
               for (final d in week) ...[
-                Expanded(child: _DayCell(day: d, isPast: _isPast(d.date), tag: _tag(d.label))),
+                Expanded(
+                  child: _CalendarDay(
+                    day: d,
+                    tag: _WeekCalendar._tag(d.label),
+                    isPast: _isPast(d.date),
+                    selected: widget.selected != null && _same(d.date, widget.selected!),
+                    canPickUp: _canPickUp(d),
+                    canDropOn: _canDropOn(d),
+                    dragging: dragging,
+                    isOrigin: _dragFrom != null && _same(d.date, _dragFrom!),
+                    onTap: () => widget.onTapDay(d),
+                    onDragStarted: () => setState(() => _dragFrom = d.date),
+                    onDragEnd: () => setState(() => _dragFrom = null),
+                    onAccept: (from) => widget.onSwap(from, d),
+                  ),
+                ),
                 if (d != week.last) const SizedBox(width: 4),
               ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(dragging ? Icons.swap_horiz_rounded : Icons.drag_indicator_rounded,
+                  size: 11, color: dragging ? AppColors.accent : AppColors.textFaint),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                    dragging
+                        ? 'Drop on any day from today on — a training day swaps, a rest day moves.'
+                        : 'Hold a day to rearrange your split · tap a day ahead to see it',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontSize: 9.5,
+                        color: dragging ? AppColors.accent : AppColors.textFaint)),
+              ),
             ],
           ),
         ],
@@ -367,130 +767,761 @@ class _WeekCalendar extends StatelessWidget {
   }
 }
 
+/// One chip: base state + tap-to-preview + (for movable days) drag source and
+/// drop target + selection ring. Locked days fade during a drag.
+class _CalendarDay extends StatelessWidget {
+  final WeekDayV2 day;
+  final String tag;
+  final bool isPast;
+  final bool selected;
+  final bool canPickUp;
+  final bool canDropOn;
+  final bool dragging;
+  final bool isOrigin;
+  final VoidCallback onTap;
+  final VoidCallback onDragStarted;
+  final VoidCallback onDragEnd;
+  final void Function(WeekDayV2 from) onAccept;
+  const _CalendarDay({
+    required this.day,
+    required this.tag,
+    required this.isPast,
+    required this.selected,
+    required this.canPickUp,
+    required this.canDropOn,
+    required this.dragging,
+    required this.isOrigin,
+    required this.onTap,
+    required this.onDragStarted,
+    required this.onDragEnd,
+    required this.onAccept,
+  });
+
+  static bool _same(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget content = Pressable(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: _DayCell(day: day, isPast: isPast, tag: tag, selected: selected),
+    );
+
+    if (canDropOn) {
+      content = DragTarget<WeekDayV2>(
+        onWillAcceptWithDetails: (d) => !_same(d.data.date, day.date),
+        onAcceptWithDetails: (d) => onAccept(d.data),
+        builder: (context, candidate, rejected) {
+          final hovering = candidate.isNotEmpty;
+          return AnimatedScale(
+            scale: hovering ? 1.06 : 1,
+            duration: const Duration(milliseconds: 120),
+            child: Pressable(
+              behavior: HitTestBehavior.opaque,
+              onTap: onTap,
+              child: _DayCell(
+                  day: day, isPast: isPast, tag: tag, selected: selected, hovering: hovering),
+            ),
+          );
+        },
+      );
+    }
+
+    if (canPickUp) {
+      content = LongPressDraggable<WeekDayV2>(
+        data: day,
+        onDragStarted: () {
+          Haptics.selection();
+          onDragStarted();
+        },
+        onDragEnd: (_) => onDragEnd(),
+        onDraggableCanceled: (_, _) => onDragEnd(),
+        onDragCompleted: onDragEnd,
+        feedback: _DragChip(day: day, tag: tag),
+        childWhenDragging: const _EmptySlot(),
+        child: content,
+      );
+    }
+
+    // Locked days recede so the legal drop zone reads as one shape.
+    if (dragging && !isOrigin && !canDropOn) {
+      content = Opacity(opacity: 0.35, child: content);
+    }
+    return content;
+  }
+}
+
 class _DayCell extends StatelessWidget {
   final WeekDayV2 day;
   final bool isPast;
   final String tag;
-  const _DayCell({required this.day, required this.isPast, required this.tag});
+  final bool selected;
+  final bool hovering;
+  const _DayCell({
+    required this.day,
+    required this.isPast,
+    required this.tag,
+    this.selected = false,
+    this.hovering = false,
+  });
 
   @override
   Widget build(BuildContext context) {
     const letters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
     final letter = letters[(day.dow - 1).clamp(0, 6)];
 
-    final missed = day.planned && !day.trained && !day.isToday && isPast;
-    final todayPending = day.isToday && day.planned && !day.trained;
-    final upcoming = day.planned && !day.trained && !day.isToday && !isPast;
-    // Trained on a day that wasn't part of the plan — real effort, but it
-    // can't wear the same "on-plan done" mark without misrepresenting it
-    // (and it has no scheduled label to show, since none was ever set).
-    final extraTrained = day.trained && !day.planned;
+    // Resolution order — today first, so a session-less today keeps its anchor.
+    final trained = day.trained;
+    final extra = trained && !day.planned;
+    final todayPending = day.isToday && !day.isRest && !trained;
+    final todayRest = day.isToday && day.isRest && !trained;
+    final missed = !day.isToday && !trained && !day.isRest && isPast;
+    final upcoming = !day.isToday && !trained && !day.isRest && !isPast;
 
-    final Color bg;
-    final Color borderColor;
-    final Color dateFg;
-    final IconData? mark;
-    final Color markFg;
-    if (day.trained) {
+    Color bg, border, dateFg, letterFg, glyphFg, pillFg, pillBg;
+    IconData glyph;
+    if (trained) {
       bg = AppColors.accent;
-      borderColor = AppColors.accent;
+      border = AppColors.accent;
       dateFg = AppColors.onAccent;
-      mark = extraTrained ? Icons.add_rounded : Icons.check_rounded;
-      markFg = AppColors.onAccent;
-    } else if (missed) {
-      bg = AppColors.warn.withValues(alpha: 0.1);
-      borderColor = AppColors.warn;
-      dateFg = AppColors.warn;
-      mark = Icons.remove_rounded;
-      markFg = AppColors.warn;
+      letterFg = AppColors.onAccent.withValues(alpha: 0.6);
+      glyph = extra ? Icons.add_rounded : Icons.check_rounded;
+      glyphFg = AppColors.onAccent;
+      pillFg = AppColors.onAccent;
+      pillBg = AppColors.onAccent.withValues(alpha: 0.16);
     } else if (todayPending) {
-      bg = AppColors.accent.withValues(alpha: 0.12);
-      borderColor = AppColors.accent;
+      bg = AppColors.accent.withValues(alpha: 0.10);
+      border = AppColors.accent;
       dateFg = AppColors.accent;
-      mark = Icons.radio_button_unchecked_rounded;
-      markFg = AppColors.accent;
-    } else if (day.planned) {
+      letterFg = AppColors.textMuted;
+      glyph = Icons.radio_button_unchecked_rounded;
+      glyphFg = AppColors.accent;
+      pillFg = AppColors.accent;
+      pillBg = AppColors.accent.withValues(alpha: 0.16);
+    } else if (todayRest) {
+      bg = AppColors.accent.withValues(alpha: 0.06);
+      border = AppColors.accent;
+      dateFg = AppColors.accent;
+      letterFg = AppColors.textMuted;
+      glyph = Icons.remove_rounded;
+      glyphFg = AppColors.accent;
+      pillFg = AppColors.textFaint;
+      pillBg = Colors.transparent;
+    } else if (missed) {
+      bg = AppColors.warn.withValues(alpha: 0.10);
+      border = AppColors.warn;
+      dateFg = AppColors.warn;
+      letterFg = AppColors.textFaint;
+      glyph = Icons.remove_rounded;
+      glyphFg = AppColors.warn;
+      pillFg = AppColors.warn;
+      pillBg = AppColors.warn.withValues(alpha: 0.12);
+    } else if (upcoming) {
       bg = AppColors.surface;
-      borderColor = AppColors.borderStrong;
-      dateFg = AppColors.textSecondary;
-      mark = null;
-      markFg = AppColors.accent;
+      border = AppColors.border;
+      dateFg = AppColors.textPrimary;
+      letterFg = AppColors.textFaint;
+      glyph = Icons.radio_button_unchecked_rounded;
+      glyphFg = AppColors.textFaint;
+      pillFg = AppColors.textMuted;
+      pillBg = AppColors.surfaceSunken;
     } else {
+      // rest (past or future)
       bg = AppColors.surface;
-      borderColor = AppColors.borderFaint;
+      border = AppColors.borderFaint;
       dateFg = AppColors.textDim;
-      mark = null;
-      markFg = AppColors.accent;
+      letterFg = AppColors.textFaint;
+      glyph = Icons.remove_rounded;
+      glyphFg = AppColors.textDim;
+      pillFg = AppColors.textDim;
+      pillBg = Colors.transparent;
     }
 
-    final tagFg = day.trained
-        ? AppColors.accentDeep
-        : missed
-            ? AppColors.warn
-            : todayPending
-                ? AppColors.accent
-                : day.planned
-                    ? AppColors.textDim
-                    : Colors.transparent;
-    final tagText = extraTrained ? 'EXTRA' : tag;
+    // Overlays: hover (drop target) wins, then selection ring.
+    if (hovering) {
+      bg = AppColors.accent.withValues(alpha: 0.14);
+      border = AppColors.accent;
+    } else if (selected) {
+      // A softer ring than the drop-target/today lime, so a previewed day reads
+      // as "looking at" rather than "active".
+      border = AppColors.accent.withValues(alpha: 0.5);
+    }
 
-    Widget cellBody = Container(
-      height: 38,
+    final pillText = extra ? 'EXTRA' : (day.isRest ? 'REST' : tag);
+    final showPill = pillText.isNotEmpty;
+
+    Widget chip = Container(
       width: double.infinity,
-      alignment: Alignment.center,
+      padding: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(9),
-        border: upcoming ? null : Border.all(color: borderColor),
+        borderRadius: BorderRadius.circular(12),
+        border: upcoming && !hovering && !selected
+            ? null
+            : Border.all(color: border, width: hovering || selected ? 1.5 : 1),
       ),
       child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(letter,
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 8.5,
+                      height: 1,
+                      color: letterFg)),
+              const SizedBox(width: 3),
+              Icon(glyph, size: 9, color: glyphFg),
+            ],
+          ),
+          const SizedBox(height: 3),
           Text('${day.date.day}',
               style: TextStyle(
                   fontFamily: AppTheme.fontFamily,
                   fontWeight: FontWeight.w700,
-                  fontSize: 11,
+                  fontSize: 15,
                   height: 1,
                   color: dateFg)),
-          if (mark != null) ...[
-            const SizedBox(height: 1),
-            Icon(mark, size: 10, color: markFg),
-          ],
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 12,
+            child: showPill
+                ? Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                        color: pillBg, borderRadius: BorderRadius.circular(5)),
+                    child: Text(pillText,
+                        maxLines: 1,
+                        overflow: TextOverflow.clip,
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 7,
+                            letterSpacing: 0.3,
+                            color: pillFg)),
+                  )
+                : null,
+          ),
         ],
       ),
     );
-    if (upcoming) {
-      cellBody = CustomPaint(
-        painter: _DashedRRectPainter(color: borderColor, radius: 9),
-        child: cellBody,
+
+    if (upcoming && !hovering && !selected) {
+      chip = CustomPaint(
+        painter: _DashedRRectPainter(color: AppColors.border, radius: 12),
+        child: chip,
       );
     }
 
-    return Column(
+    return Semantics(
+      button: true,
+      label: _a11yLabel(),
+      child: chip,
+    );
+  }
+
+  String _a11yLabel() {
+    const names = [
+      'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+    ];
+    final wd = names[(day.dow - 1).clamp(0, 6)];
+    final plan = day.isRest ? 'rest day' : (day.label ?? 'training day');
+    final rel = day.isToday ? 'today' : (isPast ? 'past' : 'upcoming');
+    final status = day.trained
+        ? 'logged'
+        : (day.isToday || !isPast || day.isRest ? 'not logged' : 'missed');
+    return '$wd ${day.date.day}, $plan, $rel, $status';
+  }
+}
+
+/// The dashed hole a dragged chip leaves behind at its origin.
+class _EmptySlot extends StatelessWidget {
+  const _EmptySlot();
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _DashedRRectPainter(color: AppColors.borderStrong, radius: 12),
+      child: Container(
+        width: double.infinity,
+        height: 51,
+        decoration: BoxDecoration(
+          color: AppColors.surfaceSunken,
+          borderRadius: BorderRadius.circular(12),
+        ),
+      ),
+    );
+  }
+}
+
+/// The floating chip that follows the pointer during a drag, with a lime badge
+/// naming the session so the gesture reads clearly.
+class _DragChip extends StatelessWidget {
+  final WeekDayV2 day;
+  final String tag;
+  const _DragChip({required this.day, required this.tag});
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 52,
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceRaised,
+              borderRadius: BorderRadius.circular(15),
+              border: Border.all(color: AppColors.accent, width: 1.5),
+              boxShadow: const [
+                BoxShadow(color: Color(0xA60A0908), blurRadius: 30, offset: Offset(0, 14)),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('${day.date.day}',
+                    style: const TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 16,
+                        height: 1,
+                        color: AppColors.textPrimary)),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                      color: AppColors.accent.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(5)),
+                  child: Text(tag,
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 7,
+                          letterSpacing: 0.3,
+                          color: AppColors.accent)),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 5),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+                color: AppColors.accent, borderRadius: BorderRadius.circular(9)),
+            child: Text(day.label ?? 'Session',
+                style: const TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 9,
+                    color: AppColors.onAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Confirmation for a day swap: the before → after, then the scope. Pops
+/// 'week' / 'forever', or null for "leave it".
+class _MoveSheet extends StatelessWidget {
+  final WeekDayV2 from;
+  final WeekDayV2 to;
+  const _MoveSheet({required this.from, required this.to});
+
+  static const _wd = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  String _dayName(WeekDayV2 d) => '${_wd[(d.dow - 1).clamp(0, 6)]} ${d.date.day}';
+
+  @override
+  Widget build(BuildContext context) {
+    final fromTag = _WeekCalendar._tag(from.label);
+    final toTag = _WeekCalendar._tag(to.label);
+    // A move: one side is a rest day. Derive the title from the session side —
+    // never the drag origin, or a rest origin reads "REST moves to …".
+    final isMove = from.isRest || to.isRest;
+    final sessionTag = from.isRest ? toTag : fromTag;
+    final destDay = from.isRest ? from : to;
+    final title =
+        isMove ? '$sessionTag moves to ${_dayName(destDay)}' : 'Swap $fromTag and $toTag';
+    final kicker = isMove ? 'MOVE A SESSION' : 'SWAP DAYS';
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceRaised,
+        border: Border(top: BorderSide(color: AppColors.border)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      padding: EdgeInsets.fromLTRB(20, 10, 20, 20 + MediaQuery.of(context).padding.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 38,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: AppColors.borderStrong, borderRadius: BorderRadius.circular(3)),
+            ),
+          ),
+          Text(kicker,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontSize: 9.5,
+                  letterSpacing: 0.7,
+                  color: AppColors.accent)),
+          const SizedBox(height: 6),
+          Text(title,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  color: AppColors.textPrimary)),
+          const SizedBox(height: 14),
+          _row('Now', _dayName(from), fromTag, _dayName(to), toTag),
+          const SizedBox(height: 6),
+          const Center(
+              child: Icon(Icons.south_rounded, size: 16, color: AppColors.textMuted)),
+          const SizedBox(height: 6),
+          _row('After', _dayName(from), toTag, _dayName(to), fromTag, accent: true),
+          const SizedBox(height: 18),
+          _primary(context, 'Just this week', 'week'),
+          const SizedBox(height: 10),
+          _primary(context, 'Every week from now', 'forever', outline: true),
+          const SizedBox(height: 12),
+          Center(
+            child: Pressable(
+              onTap: () => Navigator.of(context).pop(),
+              child: const Text('Leave it where it was',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 11.5,
+                      color: AppColors.textMuted)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(String lead, String d1, String t1, String d2, String t2,
+      {bool accent = false}) {
+    return Row(
       children: [
-        Text(letter,
-            style: TextStyle(
-                fontFamily: AppTheme.fontFamily,
-                fontWeight: FontWeight.w500,
-                fontSize: 9,
-                color: day.isToday ? AppColors.accent : AppColors.textFaint)),
-        const SizedBox(height: 5),
-        cellBody,
-        const SizedBox(height: 4),
         SizedBox(
-          height: 9,
-          child: Text(tagText,
-              maxLines: 1,
-              overflow: TextOverflow.clip,
+          width: 44,
+          child: Text(lead,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
+        ),
+        Expanded(child: _chip(d1, t1, accent)),
+        const SizedBox(width: 8),
+        Expanded(child: _chip(d2, t2, accent)),
+      ],
+    );
+  }
+
+  Widget _chip(String day, String tag, bool accent) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: accent ? AppColors.accent.withValues(alpha: 0.1) : AppColors.surface,
+        border: Border.all(color: accent ? AppColors.accent : AppColors.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(day,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
+          Text(tag,
               style: TextStyle(
                   fontFamily: AppTheme.fontFamily,
                   fontWeight: FontWeight.w700,
-                  fontSize: 7.5,
-                  letterSpacing: 0.3,
-                  color: tagFg)),
+                  fontSize: 11,
+                  color: accent ? AppColors.accent : AppColors.textPrimary)),
+        ],
+      ),
+    );
+  }
+
+  Widget _primary(BuildContext context, String label, String scope,
+      {bool outline = false}) {
+    return SizedBox(
+      width: double.infinity,
+      child: Pressable(
+        onTap: () => Navigator.of(context).pop(scope),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 15),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: outline ? Colors.transparent : AppColors.accent,
+            border: outline ? Border.all(color: AppColors.border) : null,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: outline ? AppColors.textPrimary : AppColors.onAccent)),
         ),
-      ],
+      ),
+    );
+  }
+}
+
+/// The preview's start button — same slot as the live one, but inert, so the
+/// layout doesn't jump between today and a future day.
+class _DisabledStartButton extends StatelessWidget {
+  final DateTime day;
+  const _DisabledStartButton({required this.day});
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _DashedRRectPainter(color: AppColors.border, radius: 26),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 17),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(26),
+        ),
+        child: Text('Starts ${_weekdayLong(day)}',
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w700,
+                fontSize: 13.5,
+                color: AppColors.textDim)),
+      ),
+    );
+  }
+}
+
+/// The one-line coach note on a preview — a plan, not a briefing.
+class _CoachLine extends StatelessWidget {
+  final String text;
+  const _CoachLine({required this.text});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(left: BorderSide(color: AppColors.accent, width: 2)),
+        borderRadius: BorderRadius.only(
+            topRight: Radius.circular(14), bottomRight: Radius.circular(14)),
+      ),
+      child: Text(text,
+          style: const TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontSize: 11.5,
+              height: 1.55,
+              color: AppColors.textSecondary)),
+    );
+  }
+}
+
+/// The preview's rescheduling action — opens the day picker.
+class _PreviewSwapAction extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+  const _PreviewSwapAction({required this.label, required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 15),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          border: Border.all(color: AppColors.borderStrong),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.swap_horiz_rounded, size: 17, color: AppColors.accent),
+            const SizedBox(width: 8),
+            Text(label,
+                style: const TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                    color: AppColors.accent)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The non-gestural swap path: pick a day to trade with. Pops the chosen
+/// [WeekDayV2], or null on dismiss.
+class _PickerSheet extends StatelessWidget {
+  final List<WeekDayV2> week;
+  final WeekDayV2 source;
+  final DateTime today;
+  const _PickerSheet({required this.week, required this.source, required this.today});
+
+  bool _movable(WeekDayV2 d) {
+    final t = DateTime(today.year, today.month, today.day);
+    final dd = DateTime(d.date.year, d.date.month, d.date.day);
+    if (dd.isBefore(t)) return false;
+    if (d.isToday && d.trained) return false;
+    return true;
+  }
+
+  static bool _same(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  @override
+  Widget build(BuildContext context) {
+    // A rest source has no session to place, so it can only pull one from a
+    // day that holds one; a session source can trade with any movable day.
+    final rows = [
+      for (final d in week)
+        if (!_same(d.date, source.date) && _movable(d) && (!source.isRest || !d.isRest)) d
+    ];
+    final title = source.isRest
+        ? 'Which session moves to ${_weekdayShort(source.date)} ${source.date.day}?'
+        : '${_WeekCalendar._tag(source.label)} trades places with…';
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceRaised,
+        border: Border(top: BorderSide(color: AppColors.border)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.72),
+      padding: EdgeInsets.fromLTRB(20, 10, 20, 20 + MediaQuery.of(context).padding.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 38,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: AppColors.borderStrong, borderRadius: BorderRadius.circular(3)),
+            ),
+          ),
+          Text(source.isRest ? 'MOVE A SESSION' : 'SWAP DAYS',
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontSize: 9.5,
+                  letterSpacing: 0.7,
+                  color: AppColors.accent)),
+          const SizedBox(height: 6),
+          Text(title,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  color: AppColors.textPrimary)),
+          const SizedBox(height: 14),
+          if (rows.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Text('No other day is free to move right now.',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
+            )
+          else
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                itemCount: rows.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 7),
+                itemBuilder: (_, i) => _pickerRow(context, rows[i]),
+              ),
+            ),
+          const SizedBox(height: 12),
+          Center(
+            child: Pressable(
+              onTap: () => Navigator.of(context).pop(),
+              child: const Text('Never mind',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 11.5,
+                      color: AppColors.textMuted)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _pickerRow(BuildContext context, WeekDayV2 d) {
+    final rest = d.isRest;
+    final rel = _relativeLabel(d.date, today);
+    return Pressable(
+      onTap: () => Navigator.of(context).pop(d),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 11),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          border: Border.all(color: AppColors.border),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                  color: AppColors.surfaceSunken, borderRadius: BorderRadius.circular(12)),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('${d.date.day}',
+                      style: TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                          height: 1,
+                          color: rest ? AppColors.textFaint : AppColors.accent)),
+                  Text(_weekdayShort(d.date).toUpperCase(),
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily, fontSize: 7.5, color: AppColors.textFaint)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(rest ? 'Rest day' : (d.label ?? 'Session'),
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w500,
+                          fontSize: 12.5,
+                          color: AppColors.textPrimary)),
+                  const SizedBox(height: 1),
+                  Text('$rel${rest ? ' · free' : ''}',
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily, fontSize: 10, color: AppColors.textFaint)),
+                ],
+              ),
+            ),
+            const Icon(Icons.swap_horiz_rounded, size: 18, color: AppColors.inactiveFill),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -619,7 +1650,8 @@ class _StartSessionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Pressable(
+      haptic: PressFx.medium,
       onTap: onTap,
       child: Container(
         width: double.infinity,
@@ -656,6 +1688,9 @@ class _PlanRow extends StatelessWidget {
         decoration: BoxDecoration(
           color: AppColors.surface,
           border: Border.all(color: started ? AppColors.accent.withValues(alpha: 0.35) : AppColors.border),
+          // Match the clip so the border follows the rounded corners instead of
+          // being shaved off at them.
+          borderRadius: BorderRadius.circular(18),
         ),
         child: Stack(
           children: [
@@ -786,7 +1821,7 @@ class _UpcomingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Pressable(
       onTap: () => _openTomorrowSheet(context),
       child: V2Card(
         child: Row(
@@ -933,7 +1968,7 @@ class _TomorrowSheet extends StatelessWidget {
                       color: AppColors.textSecondary)),
             ),
             const SizedBox(height: 18),
-            GestureDetector(
+            Pressable(
               onTap: () => Navigator.of(context).pop(),
               child: Container(
                 width: double.infinity,
@@ -1476,12 +2511,18 @@ class _BodyFuelCardState extends State<_BodyFuelCard> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
+            onPressed: () {
+              Haptics.selection();
+              Navigator.of(ctx).pop();
+            },
             child: const Text('Cancel',
                 style: TextStyle(fontFamily: AppTheme.fontFamily, color: AppColors.textMuted)),
           ),
           TextButton(
-            onPressed: () => Navigator.of(ctx).pop(int.tryParse(ctrl.text.trim())),
+            onPressed: () {
+              Haptics.tap();
+              Navigator.of(ctx).pop(int.tryParse(ctrl.text.trim()));
+            },
             child: const Text('Add',
                 style: TextStyle(
                     fontFamily: AppTheme.fontFamily,
@@ -1604,7 +2645,7 @@ class _FuelChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Expanded(
-      child: GestureDetector(
+      child: Pressable(
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 9),
@@ -1741,7 +2782,7 @@ class _ErrorState extends StatelessWidget {
                 style: const TextStyle(
                     fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
             const SizedBox(height: 16),
-            OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
           ],
         ),
       ),
@@ -1767,7 +2808,11 @@ String _grouped(double v) {
 const _months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const _weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+const _weekdaysLong = [
+  'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+];
 String _weekdayShort(DateTime d) => _weekdays[(d.weekday - 1).clamp(0, 6)];
+String _weekdayLong(DateTime d) => _weekdaysLong[(d.weekday - 1).clamp(0, 6)];
 String _fmtDate(DateTime d) => '${_weekdayShort(d)} ${d.day} ${_months[d.month - 1]}';
 String _fmtDayMonth(DateTime d) => '${d.day} ${_months[d.month - 1]}';
 

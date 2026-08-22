@@ -159,60 +159,72 @@ class _SplashV2State extends State<SplashV2> with SingleTickerProviderStateMixin
     final plateOpacity = (_plate.value * 1.6).clamp(0.0, 1.0);
     final bend = _bend.value * 4.5; // degrees
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.center,
+    // The rod is drawn BEHIND both arms, and the sleeves overlap its ends by
+    // `_seam`, so the bar tucks up inside each bell rather than sitting on top
+    // of it (symmetric — the old plain Row painted the rod over the left
+    // sleeve but under the right one).
+    const rodW = 96 * _s;
+    const seam = 6 * _s;
+    return Stack(
+      alignment: Alignment.center,
       children: [
-        // Left arm — bends down at the outer end as it loads.
-        Transform.rotate(
-          alignment: Alignment.centerRight,
-          angle: -bend * 3.14159265 / 180,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Transform.translate(
-                offset: Offset(-off, 0),
-                child: Opacity(
-                  opacity: plateOpacity,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _plateRect(11, 44, AppColors.accentDeep),
-                      const SizedBox(width: 3 * _s),
-                      _plateRect(15, 66, AppColors.accent),
-                    ],
-                  ),
-                ),
-              ),
-              _sleeve(),
-            ],
-          ),
-        ),
         _rodWidget(),
-        // Right arm — mirror.
-        Transform.rotate(
-          alignment: Alignment.centerLeft,
-          angle: bend * 3.14159265 / 180,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _sleeve(),
-              Transform.translate(
-                offset: Offset(off, 0),
-                child: Opacity(
-                  opacity: plateOpacity,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _plateRect(15, 66, AppColors.accent),
-                      const SizedBox(width: 3 * _s),
-                      _plateRect(11, 44, AppColors.accentDeep),
-                    ],
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            // Left arm — bends down at the outer end as it loads.
+            Transform.rotate(
+              alignment: Alignment.centerRight,
+              angle: -bend * 3.14159265 / 180,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Transform.translate(
+                    offset: Offset(-off, 0),
+                    child: Opacity(
+                      opacity: plateOpacity,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _plateRect(11, 44, AppColors.accentDeep),
+                          const SizedBox(width: 3 * _s),
+                          _plateRect(15, 66, AppColors.accent),
+                        ],
+                      ),
+                    ),
                   ),
-                ),
+                  _sleeve(),
+                ],
               ),
-            ],
-          ),
+            ),
+            const SizedBox(width: rodW - 2 * seam),
+            // Right arm — mirror.
+            Transform.rotate(
+              alignment: Alignment.centerLeft,
+              angle: bend * 3.14159265 / 180,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _sleeve(),
+                  Transform.translate(
+                    offset: Offset(off, 0),
+                    child: Opacity(
+                      opacity: plateOpacity,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _plateRect(15, 66, AppColors.accent),
+                          const SizedBox(width: 3 * _s),
+                          _plateRect(11, 44, AppColors.accentDeep),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ],
     );

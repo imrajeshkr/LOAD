@@ -4,6 +4,7 @@ import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
+import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
 
 /// The Trainer tab: one thread that remembers. Notes arrive on their own,
@@ -300,7 +301,7 @@ class _TrainerTabState extends State<TrainerTab> {
               ],
             ),
           ),
-          GestureDetector(
+          Pressable(
             onTap: () => setState(() {
               _search = !_search;
               _query = '';
@@ -336,7 +337,7 @@ class _TrainerTabState extends State<TrainerTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          GestureDetector(
+          Pressable(
             onTap: () => setState(() => _pinnedExpanded = !_pinnedExpanded),
             behavior: HitTestBehavior.opaque,
             child: Row(
@@ -757,7 +758,7 @@ class _TrainerTabState extends State<TrainerTab> {
 
   Widget _actionButton(String label, bool primary, VoidCallback onTap) {
     return Expanded(
-      child: GestureDetector(
+      child: Pressable(
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 11),
@@ -870,7 +871,7 @@ class _TrainerTabState extends State<TrainerTab> {
                 for (final (label, question) in quick)
                   Padding(
                     padding: const EdgeInsets.only(right: 6),
-                    child: GestureDetector(
+                    child: Pressable(
                       onTap: _sending ? null : () => _send(question),
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 9),
@@ -927,7 +928,7 @@ class _TrainerTabState extends State<TrainerTab> {
                     ),
                   ),
                 ),
-                GestureDetector(
+                Pressable(
                   onTap: () => _send(_draft.text),
                   child: Container(
                     width: 38,
@@ -1031,7 +1032,7 @@ class _TrainerTabState extends State<TrainerTab> {
   Widget _searchResult(CoachMessageV2 m) {
     final eb = _eyebrowFor(m);
     final tag = eb?.$1 ?? 'Note';
-    return GestureDetector(
+    return Pressable(
       onTap: () => setState(() => _search = false),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 12),
@@ -1275,7 +1276,7 @@ class _ErrorState extends StatelessWidget {
                 style: const TextStyle(
                     fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
             const SizedBox(height: 18),
-            OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
           ],
         ),
       ),

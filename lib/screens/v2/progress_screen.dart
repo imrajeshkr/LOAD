@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../models/v2_models.dart';
+import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
+import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/v2_widgets.dart';
 
@@ -34,21 +37,14 @@ const _ranges = [
 ];
 
 class _ProgressTabState extends State<ProgressTab> {
-  int _rangeIdx = 2; // 12W default — shows the full seeded history
-
   ProgressGatesV2? _gates;
   List<LiftStatusV2> _lifts = const [];
-  List<(int, int)> _effort = const [];
   List<MuscleChipV2> _muscles = const [];
-  List<ConsistencyWeekV2> _weeks = const [];
-  PhotoPairV2? _photos;
-  BodyTrendV2? _body;
   ProteinWeekV2? _protein;
+  Set<String> _monthDays = const {};
 
   bool _loading = true;
   String? _error;
-
-  _Range get _range => _ranges[_rangeIdx];
 
   @override
   void initState() {
@@ -63,30 +59,26 @@ class _ProgressTabState extends State<ProgressTab> {
     });
     try {
       final svc = SupabaseService.instance;
-      final since = _range.since;
-      // "Weekly sets per muscle" is always the trailing 7 days — it's a
-      // this-week readout, independent of the strength/effort range.
+      // Strength/stall fetch all-time; each tile slices to its own window
+      // client-side. "Weekly sets per muscle" is always the trailing 7 days.
       final muscleSince = DateTime.now().subtract(const Duration(days: 7));
+      final now = DateTime.now();
+      final monthStart = DateTime(now.year, now.month, 1);
+      final monthEnd = DateTime(now.year, now.month + 1, 0);
       final r = await Future.wait([
         svc.fetchProgressGates(),
-        svc.fetchLiftStatus(since: since),
-        svc.fetchEffortHistogram(since: since),
+        svc.fetchLiftStatus(since: null),
         svc.fetchMuscleSets(since: muscleSince),
-        svc.fetchConsistency(since: since),
-        svc.fetchPhotoPair(since: since),
-        svc.fetchBodyTrend(since: since),
         svc.fetchProteinWeek(),
+        svc.fetchTrainingDayKeys(monthStart, monthEnd),
       ]);
       if (!mounted) return;
       setState(() {
         _gates = r[0] as ProgressGatesV2?;
         _lifts = r[1] as List<LiftStatusV2>;
-        _effort = r[2] as List<(int, int)>;
-        _muscles = r[3] as List<MuscleChipV2>;
-        _weeks = r[4] as List<ConsistencyWeekV2>;
-        _photos = r[5] as PhotoPairV2?;
-        _body = r[6] as BodyTrendV2?;
-        _protein = r[7] as ProteinWeekV2?;
+        _muscles = r[2] as List<MuscleChipV2>;
+        _protein = r[3] as ProteinWeekV2?;
+        _monthDays = r[4] as Set<String>;
         _loading = false;
       });
     } catch (e) {
@@ -117,28 +109,20 @@ class _ProgressTabState extends State<ProgressTab> {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           children: [
             Text('Progress', style: Theme.of(context).textTheme.headlineMedium),
-            const SizedBox(height: 14),
-            _RangeBar(
-              index: _rangeIdx,
-              onPick: (i) {
-                setState(() => _rangeIdx = i);
-                _load();
-              },
-            ),
-            const SizedBox(height: 22),
+            const SizedBox(height: 20),
             _StrengthPanel(lifts: _lifts, gated: gates.hasStrength),
             const SizedBox(height: 26),
             _StallPanel(lifts: _lifts, gated: gates.hasStrength, onAsk: widget.onAskTrainer),
             const SizedBox(height: 26),
-            _EffortPanel(buckets: _effort, gated: gates.hasEffort, answered: gates.rirAnsweredSets),
+            _EffortPanel(gated: gates.hasEffort, answered: gates.rirAnsweredSets),
             const SizedBox(height: 26),
             _MusclePanel(muscles: _muscles, gated: gates.hasMuscle),
             const SizedBox(height: 26),
-            _BodyPanel(body: _body, protein: _protein, gated: gates.hasBody, weighIns: gates.weighIns),
+            _BodyPanel(protein: _protein, gated: gates.hasBody, weighIns: gates.weighIns),
             const SizedBox(height: 26),
-            _ConsistencyPanel(weeks: _weeks, gated: gates.hasConsistency),
+            _ConsistencyPanel(trainedDays: _monthDays, gated: gates.hasConsistency),
             const SizedBox(height: 26),
-            _PhotoPanel(photos: _photos),
+            const _PhotoPanel(),
             const SizedBox(height: 20),
             const _FooterNote(),
             const SizedBox(height: 24),
@@ -149,74 +133,136 @@ class _ProgressTabState extends State<ProgressTab> {
   }
 }
 
-// ── range selector ─────────────────────────────────────────────────────────
+// ── shared panel scaffolding ─────────────────────────────────────────────────
 
-class _RangeBar extends StatelessWidget {
-  final int index;
-  final ValueChanged<int> onPick;
-  const _RangeBar({required this.index, required this.onPick});
+/// Panel heading — the question, plus an optional "i" that reveals a short
+/// explanation of the chart (replacing the always-on blurbs), and an optional
+/// trailing control (e.g. a per-chart period cycle).
+class _PanelHead extends StatelessWidget {
+  final String question;
+  final Widget? trailing;
+  const _PanelHead({required this.question, this.trailing});
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        border: Border.all(color: AppColors.border),
-        borderRadius: BorderRadius.circular(14),
-      ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          for (var i = 0; i < _ranges.length; i++)
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => onPick(i),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 9),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: i == index ? AppColors.accent : Colors.transparent,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Text(_ranges[i].label,
-                      style: TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 12.5,
-                          color: i == index ? AppColors.onAccent : AppColors.textMuted)),
-                ),
-              ),
-            ),
+          Expanded(
+            child: Text(question,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 18,
+                    height: 1.1,
+                    color: AppColors.textPrimary)),
+          ),
+          ?trailing,
         ],
       ),
     );
   }
 }
 
-// ── shared panel scaffolding ─────────────────────────────────────────────────
-
-class _PanelHead extends StatelessWidget {
-  final String question;
-  final String blurb;
-  const _PanelHead({required this.question, required this.blurb});
+/// A small "i" that opens a short explanation of a chart — how to read it —
+/// so the panels can drop their always-on descriptive text.
+class _InfoDot extends StatelessWidget {
+  final String title;
+  final String body;
+  const _InfoDot({required this.title, required this.body});
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(question,
-            style: const TextStyle(
+    return Pressable(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (_) => Container(
+          decoration: const BoxDecoration(
+            color: AppColors.surfaceRaised,
+            border: Border(top: BorderSide(color: AppColors.border)),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+          ),
+          padding: EdgeInsets.fromLTRB(22, 10, 22, 24 + MediaQuery.of(context).padding.bottom),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 38,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                      color: AppColors.borderStrong, borderRadius: BorderRadius.circular(3)),
+                ),
+              ),
+              Text(title,
+                  style: const TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                      color: AppColors.textPrimary)),
+              const SizedBox(height: 8),
+              Text(body,
+                  style: const TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontSize: 13,
+                      height: 1.5,
+                      color: AppColors.textSecondary)),
+            ],
+          ),
+        ),
+      ),
+      child: Container(
+        width: 18,
+        height: 18,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: AppColors.borderStrong),
+        ),
+        child: const Text('i',
+            style: TextStyle(
                 fontFamily: AppTheme.fontFamily,
                 fontWeight: FontWeight.w700,
-                fontSize: 19,
-                height: 1.1,
-                color: AppColors.textPrimary)),
-        const SizedBox(height: 4),
-        Text(blurb,
-            style: const TextStyle(
-                fontFamily: AppTheme.fontFamily, fontSize: 12.5, height: 1.35, color: AppColors.textMuted)),
-        const SizedBox(height: 14),
-      ],
+                fontSize: 11,
+                height: 1,
+                color: AppColors.textMuted)),
+      ),
+    );
+  }
+}
+
+/// Compact per-chart period control — tap to cycle 4W → 8W → 12W → All.
+class _RangeCycle extends StatelessWidget {
+  final int index;
+  final ValueChanged<int> onChanged;
+  final bool small;
+  const _RangeCycle({required this.index, required this.onChanged, this.small = false});
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => onChanged((index + 1) % _ranges.length),
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: small ? 7 : 9, vertical: small ? 3 : 5),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceSunken,
+          border: Border.all(color: AppColors.border),
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Text(_ranges[index].label,
+            style: TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w700,
+                fontSize: small ? 9.5 : 11,
+                height: 1,
+                color: AppColors.accent)),
+      ),
     );
   }
 }
@@ -266,9 +312,7 @@ class _StrengthPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _PanelHead(
-            question: 'Are you getting stronger?',
-            blurb: 'One tile per main lift. The number leads, the line is evidence.'),
+        const _PanelHead(question: 'Are you getting stronger?'),
         if (!gated || top.isEmpty)
           const _Gated(
               icon: Icons.show_chart_rounded,
@@ -285,18 +329,45 @@ class _StrengthPanel extends StatelessWidget {
   }
 }
 
-class _StrengthTile extends StatelessWidget {
+class _StrengthTile extends StatefulWidget {
   final LiftStatusV2 lift;
   const _StrengthTile({required this.lift});
   @override
+  State<_StrengthTile> createState() => _StrengthTileState();
+}
+
+class _StrengthTileState extends State<_StrengthTile> {
+  int _rangeIdx = 0; // 4W default
+
+  @override
   Widget build(BuildContext context) {
+    final lift = widget.lift;
     final width = (MediaQuery.of(context).size.width - 40 - 12) / 2;
-    final up = lift.netChangeKg > 0;
-    final flat = lift.netChangeKg == 0;
-    final deltaColor = up ? AppColors.accent : (flat ? AppColors.textMuted : AppColors.warn);
+
+    // Slice the dated series to the tile's own window. Fall back to the whole
+    // series (older payloads without dates) so nothing breaks.
+    final since = _ranges[_rangeIdx].since;
+    final hasDates = lift.e1rmPoints.isNotEmpty;
+    final windowed = hasDates
+        ? (since == null
+            ? lift.e1rmPoints
+            : lift.e1rmPoints.where((p) => !p.$1.isBefore(since)).toList())
+        : const <(DateTime, double)>[];
+    final vals = hasDates ? windowed.map((p) => p.$2).toList() : lift.e1rmSeries;
+
+    final net = hasDates
+        ? (vals.length >= 2 ? vals.last - vals.first : 0.0)
+        : lift.netChangeKg;
+    final headline = vals.isNotEmpty ? vals.last : (lift.latestE1rmKg ?? 0);
+    final enough = vals.length >= 2;
+
+    final up = net > 0.001;
+    final down = net < -0.001;
+    final deltaColor = up ? AppColors.accent : (down ? AppColors.warn : AppColors.textMuted);
     final deltaIcon = up
         ? Icons.trending_up_rounded
-        : (flat ? Icons.trending_flat_rounded : Icons.trending_down_rounded);
+        : (down ? Icons.trending_down_rounded : Icons.trending_flat_rounded);
+
     return Container(
       width: width,
       padding: const EdgeInsets.all(14),
@@ -308,17 +379,29 @@ class _StrengthTile extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(lift.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
+          Row(
+            children: [
+              Expanded(
+                child: Text(lift.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
+              ),
+              const SizedBox(width: 6),
+              _RangeCycle(
+                index: _rangeIdx,
+                small: true,
+                onChanged: (i) => setState(() => _rangeIdx = i),
+              ),
+            ],
+          ),
           const SizedBox(height: 8),
           Row(
             crossAxisAlignment: CrossAxisAlignment.baseline,
             textBaseline: TextBaseline.alphabetic,
             children: [
-              Text(_n(lift.latestE1rmKg ?? 0),
+              Text(_n(headline),
                   style: const TextStyle(
                       fontFamily: AppTheme.fontFamily,
                       fontWeight: FontWeight.w700,
@@ -335,23 +418,28 @@ class _StrengthTile extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          Row(
-            children: [
-              Icon(deltaIcon, size: 14, color: deltaColor),
-              const SizedBox(width: 3),
-              Text('${up ? '+' : ''}${_n(lift.netChangeKg)} kg',
-                  style: TextStyle(
-                      fontFamily: AppTheme.fontFamily,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 11.5,
-                      color: deltaColor)),
-            ],
-          ),
+          if (enough)
+            Row(
+              children: [
+                Icon(deltaIcon, size: 14, color: deltaColor),
+                const SizedBox(width: 3),
+                Text('${up ? '+' : ''}${_n(net)} kg',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 11.5,
+                        color: deltaColor)),
+              ],
+            )
+          else
+            const Text('not enough in window',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textFaint)),
           const SizedBox(height: 10),
           SizedBox(
             height: 30,
             width: double.infinity,
-            child: CustomPaint(painter: _Sparkline(lift.e1rmSeries, deltaColor)),
+            child: CustomPaint(painter: _Sparkline(vals, enough ? deltaColor : AppColors.textFaint)),
           ),
         ],
       ),
@@ -397,134 +485,139 @@ class _StallPanel extends StatelessWidget {
   final bool gated;
   final void Function(String question) onAsk;
   const _StallPanel({required this.lifts, required this.gated, required this.onAsk});
+
+  /// A varied, situation-specific read of *why* a lift is flagged — not one
+  /// fixed sentence. Branches on how it stalled.
+  static String stallLine(LiftStatusV2 l) {
+    final kg = _n(l.latestTopKg ?? 0);
+    final n = l.streakSessions;
+    if (l.streakTopHits >= 2) {
+      return 'Cleared the top of the rep range ${l.streakTopHits}× at $kg kg — it is asking for more load.';
+    }
+    if (l.netChangeKg < -0.001) {
+      return 'Slipping — down ${_n(l.netChangeKg.abs())} kg across the last $n sessions at $kg kg.';
+    }
+    if (n >= 5) {
+      return 'Flat for $n straight sessions at $kg kg.';
+    }
+    if (n >= 3) {
+      return 'Held at $kg kg for $n sessions with no jump.';
+    }
+    return 'Not moving at $kg kg.';
+  }
+
   @override
   Widget build(BuildContext context) {
     final tracked = lifts.where((l) => l.status != 'insufficient').toList();
     final stalled = tracked.where((l) => l.stalled).toList();
-    final fine = tracked.where((l) => !l.stalled).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _PanelHead(
-            question: 'Where are you stuck?',
-            blurb: 'A lift that stops moving, caught early — before it becomes a month lost.'),
+        const _PanelHead(question: 'Where are you stuck?'),
         if (!gated || tracked.isEmpty)
           const _Gated(
               icon: Icons.trending_up_rounded,
               title: 'Three sessions of a lift and I can tell whether it has stopped moving',
               blurb: 'Nothing has stalled yet. Nothing could have.')
-        else ...[
-          for (final l in stalled) ...[
-            _StallCard(lift: l, onAsk: onAsk),
-            const SizedBox(height: 10),
-          ],
-          if (stalled.isEmpty)
-            const _Gated(
-                icon: Icons.check_circle_outline_rounded,
-                title: 'Nothing is stuck',
-                blurb: 'Every tracked lift is still moving. Keep going.'),
-          if (fine.isNotEmpty) ...[
-            const SizedBox(height: 2),
-            _FineRow(lifts: fine),
-          ],
-        ],
+        else if (stalled.isEmpty)
+          const _Gated(
+              icon: Icons.check_circle_outline_rounded,
+              title: 'Nothing is stuck',
+              blurb: 'Every tracked lift is still moving. Keep going.')
+        else
+          _StallList(lifts: stalled, onAsk: onAsk),
       ],
     );
   }
 }
 
-class _StallCard extends StatelessWidget {
-  final LiftStatusV2 lift;
+/// All stalled lifts in one card — a row per lift, each with a dynamic read and
+/// a compact "Consult trainer" action (which hands over the lift's context).
+class _StallList extends StatelessWidget {
+  final List<LiftStatusV2> lifts;
   final void Function(String question) onAsk;
-  const _StallCard({required this.lift, required this.onAsk});
+  const _StallList({required this.lifts, required this.onAsk});
   @override
   Widget build(BuildContext context) {
-    final detail = '${lift.streakSessions} sessions at ${_n(lift.latestTopKg ?? 0)} kg, '
-        'top of the range ${lift.streakTopHits}×.';
     return V2Card(
       borderColor: AppColors.warn,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.trending_flat_rounded, size: 16, color: AppColors.warn),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(lift.name,
-                    style: const TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 14.5,
-                        color: AppColors.textPrimary)),
-              ),
-              StatusChip(icon: Icons.warning_amber_rounded, label: 'Stalled', color: AppColors.warn),
+          for (var i = 0; i < lifts.length; i++) ...[
+            if (i > 0) ...[
+              const SizedBox(height: 12),
+              const Divider(height: 1, color: AppColors.borderFaint),
+              const SizedBox(height: 12),
             ],
-          ),
-          const SizedBox(height: 8),
-          Text(detail,
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily, fontSize: 12.5, height: 1.4, color: AppColors.textSecondary)),
-          const SizedBox(height: 12),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => onAsk(
-              'My ${lift.name.toLowerCase()} has been stuck at ${_n(lift.latestTopKg ?? 0)} kg '
-              'for ${lift.streakSessions} sessions — what should I do?',
-            ),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-              decoration: BoxDecoration(
-                color: AppColors.surfaceSunken,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.chat_bubble_outline_rounded, size: 15, color: AppColors.accent),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Ask the trainer about ${lift.name.toLowerCase()}',
-                            style: const TextStyle(
-                                fontFamily: AppTheme.fontFamily,
-                                fontWeight: FontWeight.w500,
-                                fontSize: 12.5,
-                                color: AppColors.textPrimary)),
-                        const SizedBox(height: 1),
-                        const Text('Sends this lift’s recent sessions',
-                            style: TextStyle(
-                                fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
-                      ],
-                    ),
-                  ),
-                  const Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.textFaint),
-                ],
-              ),
-            ),
-          ),
+            _StallRow(lift: lifts[i], onAsk: onAsk),
+          ],
         ],
       ),
     );
   }
 }
 
-class _FineRow extends StatelessWidget {
-  final List<LiftStatusV2> lifts;
-  const _FineRow({required this.lifts});
+class _StallRow extends StatelessWidget {
+  final LiftStatusV2 lift;
+  final void Function(String question) onAsk;
+  const _StallRow({required this.lift, required this.onAsk});
   @override
   Widget build(BuildContext context) {
-    final names = lifts.map((l) => l.name).join(', ');
-    return Row(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Icon(Icons.trending_up_rounded, size: 15, color: AppColors.accent),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text('${lifts.length} still moving — $names',
+        Row(
+          children: [
+            const Icon(Icons.trending_flat_rounded, size: 16, color: AppColors.warn),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(lift.name,
+                  style: const TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 14.5,
+                      color: AppColors.textPrimary)),
+            ),
+            // Compact "Consult trainer" — chat icon + label, hands over context.
+            Pressable(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onAsk(
+                'My ${lift.name.toLowerCase()} has been stuck at ${_n(lift.latestTopKg ?? 0)} kg '
+                'for ${lift.streakSessions} sessions — what should I do?',
+              ),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceSunken,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(Icons.chat_bubble_outline_rounded, size: 14, color: AppColors.accent),
+                    SizedBox(width: 6),
+                    Text('Consult trainer',
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 11,
+                            color: AppColors.accent)),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Padding(
+          padding: const EdgeInsets.only(left: 24),
+          child: Text(_StallPanel.stallLine(lift),
               style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily, fontSize: 12, height: 1.4, color: AppColors.textMuted)),
+                  fontFamily: AppTheme.fontFamily,
+                  fontSize: 12.5,
+                  height: 1.4,
+                  color: AppColors.textSecondary)),
         ),
       ],
     );
@@ -533,15 +626,35 @@ class _FineRow extends StatelessWidget {
 
 // ── panel 3: effort histogram ────────────────────────────────────────────────
 
-class _EffortPanel extends StatelessWidget {
-  final List<(int, int)> buckets;
+class _EffortPanel extends StatefulWidget {
   final bool gated;
   final int answered;
-  const _EffortPanel({required this.buckets, required this.gated, required this.answered});
+  const _EffortPanel({required this.gated, required this.answered});
+  @override
+  State<_EffortPanel> createState() => _EffortPanelState();
+}
+
+class _EffortPanelState extends State<_EffortPanel> {
+  int _rangeIdx = 0; // 4W default
+  List<(int, int)> _buckets = const [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    setState(() => _loading = true);
+    final b = await SupabaseService.instance.fetchEffortHistogram(since: _ranges[_rangeIdx].since);
+    if (mounted) setState(() { _buckets = b; _loading = false; });
+  }
+
   @override
   Widget build(BuildContext context) {
     final counts = List<int>.filled(7, 0);
-    for (final b in buckets) {
+    for (final b in _buckets) {
       if (b.$1 >= 0 && b.$1 <= 6) counts[b.$1] = b.$2;
     }
     final total = counts.fold<int>(0, (s, c) => s + c);
@@ -552,17 +665,26 @@ class _EffortPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _PanelHead(
+        _PanelHead(
             question: 'Are you training hard enough?',
-            blurb: 'Where your sets end, relative to failure. The band is the target.'),
-        if (!gated)
+            trailing: widget.gated
+                ? _RangeCycle(index: _rangeIdx, onChanged: (i) { setState(() => _rangeIdx = i); _fetch(); })
+                : null),
+        if (!widget.gated)
           _Gated(
               icon: Icons.equalizer_rounded,
               title: 'Eight logged sets with an effort answer and this fills in',
-              blurb: 'You have answered $answered so far. A couple answers is an anecdote.')
+              blurb: 'You have answered ${widget.answered} so far. A couple answers is an anecdote.')
+        else if (total == 0 && !_loading)
+          const _Gated(
+              icon: Icons.equalizer_rounded,
+              title: 'No effort answers in this window',
+              blurb: 'Widen the period, or log a few sets with an effort answer.')
         else
           V2Card(
-            child: Column(
+            child: Stack(
+              children: [
+                Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Row(
@@ -578,9 +700,12 @@ class _EffortPanel extends StatelessWidget {
                             color: AppColors.accent)),
                     const SizedBox(width: 8),
                     const Expanded(
-                      child: Text('of sets end in the effective zone',
-                          style: TextStyle(
-                              fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
+                      child: Padding(
+                        padding: EdgeInsets.only(right: 24),
+                        child: Text('of sets end in the effective zone',
+                            style: TextStyle(
+                                fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
+                      ),
                     ),
                   ],
                 ),
@@ -605,10 +730,18 @@ class _EffortPanel extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(height: 8),
-                const Text('Reps left in the tank when you racked it. Green is the target band.',
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textFaint)),
+              ],
+                ),
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: _InfoDot(
+                      title: 'Are you training hard enough?',
+                      body: 'Each bar counts your working sets by how many reps you had left in '
+                          'the tank (RIR) when you stopped. The green 1–3 band is the effective '
+                          'zone — hard enough to grow, not so hard it wrecks recovery. The % is '
+                          'the share of sets that landed in it, over the chosen period.'),
+                ),
               ],
             ),
           ),
@@ -654,31 +787,73 @@ class _EffortBar extends StatelessWidget {
 
 // ── panel 4: muscle sets ─────────────────────────────────────────────────────
 
+const double _muscleScaleMax = 24.0; // a bit past the 20 top-of-band
+
+/// (label, color) for a weekly set count against the 10–20 growth band.
+(String, Color) _muscleStatus(int sets) {
+  if (sets < 10) return ('LOW', AppColors.warn);
+  if (sets <= 20) return ('ON TRACK', AppColors.accent);
+  return ('HIGH', AppColors.textMuted);
+}
+
 class _MusclePanel extends StatelessWidget {
   final List<MuscleChipV2> muscles;
   final bool gated;
   const _MusclePanel({required this.muscles, required this.gated});
   @override
   Widget build(BuildContext context) {
+    // Most-neglected first — the whole point of the panel is spotting the gap.
+    final sorted = [...muscles]..sort((a, b) => a.sets.compareTo(b.sets));
+    final lowCount = sorted.where((m) => m.sets < 10).length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _PanelHead(
-            question: 'Is anything neglected?',
-            blurb: 'Weekly sets per muscle, against the 10–20 set band that drives growth.'),
-        if (!gated || muscles.isEmpty)
+        const _PanelHead(question: 'Is anything neglected?'),
+        if (!gated || sorted.isEmpty)
           const _Gated(
               icon: Icons.grid_view_rounded,
               title: 'One full week of training and this appears',
               blurb: 'Sets per muscle only means something across a whole week.')
         else
           V2Card(
-            child: Column(
+            child: Stack(
               children: [
-                for (var i = 0; i < muscles.length; i++) ...[
-                  _MuscleRow(muscle: muscles[i]),
-                  if (i < muscles.length - 1) const SizedBox(height: 12),
-                ],
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (lowCount > 0) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(right: 24),
+                        child: Text(
+                            lowCount == 1
+                                ? '1 muscle under the band this week'
+                                : '$lowCount muscles under the band this week',
+                            style: const TextStyle(
+                                fontFamily: AppTheme.fontFamily,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 12.5,
+                                color: AppColors.warn)),
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+                    for (var i = 0; i < sorted.length; i++) ...[
+                      _MuscleRow(muscle: sorted[i]),
+                      if (i < sorted.length - 1) const SizedBox(height: 14),
+                    ],
+                    const SizedBox(height: 12),
+                    const _MuscleAxis(),
+                  ],
+                ),
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: _InfoDot(
+                      title: 'Is anything neglected?',
+                      body: 'Hard working sets per muscle group over the last 7 days. The shaded '
+                          '10–20 band is the weekly volume that reliably drives growth for most '
+                          'lifters — below it a muscle is under-stimulated, well above it is '
+                          'usually junk volume. Sorted with the most neglected on top.'),
+                ),
               ],
             ),
           ),
@@ -692,9 +867,8 @@ class _MuscleRow extends StatelessWidget {
   const _MuscleRow({required this.muscle});
   @override
   Widget build(BuildContext context) {
-    const scaleMax = 24.0; // a bit past the 20 top-of-band
-    final low = muscle.sets < 10;
-    final frac = (muscle.sets / scaleMax).clamp(0.0, 1.0);
+    final (statusLabel, statusColor) = _muscleStatus(muscle.sets);
+    final frac = (muscle.sets / _muscleScaleMax).clamp(0.0, 1.0);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -703,7 +877,10 @@ class _MuscleRow extends StatelessWidget {
             Expanded(
               child: Text(muscle.group,
                   style: const TextStyle(
-                      fontFamily: AppTheme.fontFamily, fontSize: 13, color: AppColors.textSecondary)),
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 13,
+                      color: AppColors.textPrimary)),
             ),
             Text('${muscle.sets}',
                 style: const TextStyle(
@@ -711,48 +888,66 @@ class _MuscleRow extends StatelessWidget {
                     fontWeight: FontWeight.w700,
                     fontSize: 13,
                     color: AppColors.textPrimary)),
-            if (low) ...[
-              const SizedBox(width: 6),
-              const Text('low',
+            const Text(' sets',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: statusColor.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(statusLabel,
                   style: TextStyle(
                       fontFamily: AppTheme.fontFamily,
                       fontWeight: FontWeight.w700,
-                      fontSize: 10,
-                      color: AppColors.warn)),
-            ],
+                      fontSize: 8.5,
+                      letterSpacing: 0.3,
+                      color: statusColor)),
+            ),
           ],
         ),
-        const SizedBox(height: 6),
+        const SizedBox(height: 7),
         LayoutBuilder(builder: (context, c) {
           final w = c.maxWidth;
-          return Stack(
-            children: [
-              // 10–20 band shading
-              Positioned(
-                left: w * (10 / scaleMax),
-                width: w * (10 / scaleMax),
-                top: 0,
-                bottom: 0,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: AppColors.accent.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
+          return SizedBox(
+            height: 10,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                // track
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(5),
+                  child: Container(height: 10, color: AppColors.surfaceSunken),
                 ),
-              ),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: Container(
-                  height: 8,
-                  color: AppColors.surfaceSunken,
+                // 10–20 growth band
+                Positioned(
+                  left: w * (10 / _muscleScaleMax),
+                  width: w * (10 / _muscleScaleMax),
+                  top: 0,
+                  bottom: 0,
+                  child: Container(color: AppColors.accent.withValues(alpha: 0.12)),
+                ),
+                // band edge ticks at 10 and 20
+                for (final t in const [10.0, 20.0])
+                  Positioned(
+                    left: w * (t / _muscleScaleMax) - 0.5,
+                    top: 0,
+                    bottom: 0,
+                    child: Container(width: 1, color: AppColors.border),
+                  ),
+                // fill
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(5),
                   child: FractionallySizedBox(
                     alignment: Alignment.centerLeft,
                     widthFactor: frac,
-                    child: Container(color: low ? AppColors.warn : AppColors.accent),
+                    child: Container(height: 10, color: statusColor),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           );
         }),
       ],
@@ -760,29 +955,87 @@ class _MuscleRow extends StatelessWidget {
   }
 }
 
+/// A one-time scale under the muscle rows: 0 · the 10–20 band · 24+.
+class _MuscleAxis extends StatelessWidget {
+  const _MuscleAxis();
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(builder: (context, c) {
+      final w = c.maxWidth;
+      Widget tick(double v, String label) => Positioned(
+            left: (w * (v / _muscleScaleMax) - 10).clamp(0.0, w - 20),
+            child: SizedBox(
+              width: 20,
+              child: Text(label,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontFamily: AppTheme.fontFamily, fontSize: 8.5, color: AppColors.textFaint)),
+            ),
+          );
+      return SizedBox(
+        height: 12,
+        child: Stack(
+          children: [tick(0, '0'), tick(10, '10'), tick(20, '20'), tick(24, '24+')],
+        ),
+      );
+    });
+  }
+}
+
 // ── panel 5: body & fuel ─────────────────────────────────────────────────────
 
-class _BodyPanel extends StatelessWidget {
-  final BodyTrendV2? body;
+class _BodyPanel extends StatefulWidget {
   final ProteinWeekV2? protein;
   final bool gated;
   final int weighIns;
-  const _BodyPanel(
-      {required this.body, required this.protein, required this.gated, required this.weighIns});
+  const _BodyPanel({required this.protein, required this.gated, required this.weighIns});
+  @override
+  State<_BodyPanel> createState() => _BodyPanelState();
+}
+
+class _BodyPanelState extends State<_BodyPanel> {
+  int _rangeIdx = 0; // 4W default
+  BodyTrendV2? _body;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    final b = await SupabaseService.instance.fetchBodyTrend(since: _ranges[_rangeIdx].since);
+    if (mounted) setState(() => _body = b);
+  }
+
+  String _spanLabel(BodyTrendV2 b) {
+    final label = _ranges[_rangeIdx].label;
+    final windowName = label == 'All' ? 'all time' : 'last $label'.replaceAll('W', ' weeks');
+    if (b.points.length >= 2) {
+      final from = b.points.first.$1;
+      final to = b.points.last.$1;
+      return 'Trend over $windowName · ${_fmtDayMonth(from)} – ${_fmtDayMonth(to)}';
+    }
+    return 'Trend over $windowName';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final b = body;
+    final protein = widget.protein;
+    final b = _body;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _PanelHead(
+        _PanelHead(
             question: 'Is your body changing?',
-            blurb: 'Daily weight is noise. The seven-day average is the signal.'),
-        if (!gated || b == null || b.sevenDayAvg == null)
+            trailing: widget.gated
+                ? _RangeCycle(index: _rangeIdx, onChanged: (i) { setState(() => _rangeIdx = i); _fetch(); })
+                : null),
+        if (!widget.gated || b == null || b.sevenDayAvg == null)
           _Gated(
               icon: Icons.monitor_weight_outlined,
               title: 'Seven weigh-ins and the average starts to mean something',
-              blurb: '$weighIns so far. Day to day it is mostly water, not fat.')
+              blurb: '${widget.weighIns} so far. Day to day it is mostly water, not fat.')
         else
           V2Card(
             child: Column(
@@ -824,7 +1077,11 @@ class _BodyPanel extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (protein != null && protein!.loggedDays > 0) ...[
+                const SizedBox(height: 8),
+                Text(_spanLabel(b),
+                    style: const TextStyle(
+                        fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textFaint)),
+                if (protein != null && protein.loggedDays > 0) ...[
                   const SizedBox(height: 16),
                   const Divider(height: 1, color: AppColors.borderFaint),
                   const SizedBox(height: 14),
@@ -833,7 +1090,7 @@ class _BodyPanel extends StatelessWidget {
                       const Icon(Icons.egg_alt_outlined, size: 16, color: AppColors.textMuted),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: Text('Protein hit on ${protein!.hitDays} of ${protein!.loggedDays} days',
+                        child: Text('Protein hit on ${protein.hitDays} of ${protein.loggedDays} days',
                             style: const TextStyle(
                                 fontFamily: AppTheme.fontFamily,
                                 fontWeight: FontWeight.w500,
@@ -841,7 +1098,7 @@ class _BodyPanel extends StatelessWidget {
                                 color: AppColors.textPrimary)),
                       ),
                       Text(
-                          '${protein!.targetG ?? '—'} g target · ${_n(protein!.averageG)} g avg',
+                          '${protein.targetG ?? '—'} g target · ${_n(protein.averageG)} g avg',
                           style: const TextStyle(
                               fontFamily: AppTheme.fontFamily, fontSize: 10.5, color: AppColors.textMuted)),
                     ],
@@ -904,28 +1161,29 @@ class _WeightChart extends CustomPainter {
 // ── panel 6: consistency ─────────────────────────────────────────────────────
 
 class _ConsistencyPanel extends StatelessWidget {
-  final List<ConsistencyWeekV2> weeks;
+  /// 'yyyy-MM-dd' keys the user trained on, this month.
+  final Set<String> trainedDays;
   final bool gated;
-  const _ConsistencyPanel({required this.weeks, required this.gated});
+  const _ConsistencyPanel({required this.trainedDays, required this.gated});
+
+  static String _key(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
   @override
   Widget build(BuildContext context) {
-    final counted = weeks.where((w) => !w.fullyPaused).toList();
-    final rate = counted.isEmpty
-        ? 0.0
-        : counted.fold<int>(0, (s, w) => s + w.sessionCount) / counted.length;
-    final target = weeks.isEmpty ? 4 : weeks.last.target;
-    final maxC = weeks.fold<int>(target, (m, w) => w.sessionCount > m ? w.sessionCount : m);
+    final now = DateTime.now();
+    final trainedThisMonth = trainedDays
+        .where((k) => k.startsWith('${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}'))
+        .length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _PanelHead(
-            question: 'Are you showing up?',
-            blurb: 'A rate against your target, not a streak that one missed week kills.'),
-        if (!gated || weeks.isEmpty)
+        const _PanelHead(question: 'Are you showing up?'),
+        if (!gated)
           const _Gated(
               icon: Icons.event_available_outlined,
-              title: 'Three weeks before a rate is worth plotting',
-              blurb: 'Until then the number is the whole story.')
+              title: 'Train a few times and your month fills in',
+              blurb: 'The calendar needs some sessions before it says anything.')
         else
           V2Card(
             child: Column(
@@ -935,7 +1193,7 @@ class _ConsistencyPanel extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.baseline,
                   textBaseline: TextBaseline.alphabetic,
                   children: [
-                    Text(rate.toStringAsFixed(1),
+                    Text('$trainedThisMonth',
                         style: const TextStyle(
                             fontFamily: AppTheme.fontFamily,
                             fontWeight: FontWeight.w700,
@@ -944,32 +1202,14 @@ class _ConsistencyPanel extends StatelessWidget {
                             color: AppColors.textPrimary)),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text('sessions a week against a target of $target',
+                      child: Text('${trainedThisMonth == 1 ? 'session' : 'sessions'} in ${_months[now.month - 1]}',
                           style: const TextStyle(
                               fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
                     ),
                   ],
                 ),
-                const SizedBox(height: 18),
-                SizedBox(
-                  height: 78,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      for (final w in weeks)
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 3),
-                            child: _WeekBar(
-                              week: w,
-                              fraction: w.sessionCount / maxC,
-                              targetFraction: target / maxC,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
+                const SizedBox(height: 16),
+                _MonthGrid(trainedDays: trainedDays, now: now, keyOf: _key),
               ],
             ),
           ),
@@ -978,138 +1218,603 @@ class _ConsistencyPanel extends StatelessWidget {
   }
 }
 
-class _WeekBar extends StatelessWidget {
-  final ConsistencyWeekV2 week;
-  final double fraction;
-  final double targetFraction;
-  const _WeekBar(
-      {required this.week, required this.fraction, required this.targetFraction});
+/// The current month as day chips — filled = trained, ring = today, grey = not
+/// trained, faint = future. Same visual language as the Train-tab calendar.
+class _MonthGrid extends StatelessWidget {
+  final Set<String> trainedDays;
+  final DateTime now;
+  final String Function(DateTime) keyOf;
+  const _MonthGrid({required this.trainedDays, required this.now, required this.keyOf});
+
   @override
   Widget build(BuildContext context) {
-    final hitTarget = week.sessionCount >= week.target;
+    final today = DateTime(now.year, now.month, now.day);
+    final first = DateTime(now.year, now.month, 1);
+    final daysInMonth = DateTime(now.year, now.month + 1, 0).day;
+    final lead = first.weekday - 1; // Mon=0 leading blanks
+    final cells = <Widget>[];
+    for (var i = 0; i < lead; i++) {
+      cells.add(const SizedBox.shrink());
+    }
+    for (var d = 1; d <= daysInMonth; d++) {
+      final date = DateTime(now.year, now.month, d);
+      final trained = trainedDays.contains(keyOf(date));
+      final isToday = date == today;
+      final isFuture = date.isAfter(today);
+      cells.add(_MonthCell(day: d, trained: trained, isToday: isToday, isFuture: isFuture));
+    }
+    // pad to a full final row
+    while (cells.length % 7 != 0) {
+      cells.add(const SizedBox.shrink());
+    }
     return Column(
-      mainAxisAlignment: MainAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          height: (fraction * 52).clamp(week.sessionCount == 0 ? 2 : 5, 52),
-          decoration: BoxDecoration(
-            color: week.fullyPaused
-                ? AppColors.borderFaint
-                : (hitTarget ? AppColors.accent : AppColors.accentDeep),
-            borderRadius: BorderRadius.circular(3),
-          ),
+        Row(
+          children: [
+            for (final l in const ['M', 'T', 'W', 'T', 'F', 'S', 'S'])
+              Expanded(
+                child: Center(
+                  child: Text(l,
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily, fontSize: 9, color: AppColors.textFaint)),
+                ),
+              ),
+          ],
         ),
-        const SizedBox(height: 5),
-        Text('${week.weekStart.day}',
-            style: const TextStyle(
-                fontFamily: AppTheme.fontFamily, fontSize: 9, color: AppColors.textFaint)),
+        const SizedBox(height: 6),
+        for (var r = 0; r < cells.length; r += 7)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 5),
+            child: Row(
+              children: [
+                for (var c = 0; c < 7; c++)
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2.5),
+                      child: cells[r + c],
+                    ),
+                  ),
+              ],
+            ),
+          ),
       ],
+    );
+  }
+}
+
+class _MonthCell extends StatelessWidget {
+  final int day;
+  final bool trained;
+  final bool isToday;
+  final bool isFuture;
+  const _MonthCell(
+      {required this.day, required this.trained, required this.isToday, required this.isFuture});
+  @override
+  Widget build(BuildContext context) {
+    final Color bg;
+    final Color fg;
+    if (trained) {
+      bg = AppColors.accent;
+      fg = AppColors.onAccent;
+    } else if (isFuture) {
+      bg = AppColors.surfaceSunken;
+      fg = AppColors.textFaint;
+    } else {
+      bg = AppColors.surfaceSunken;
+      fg = AppColors.textDim;
+    }
+    return AspectRatio(
+      aspectRatio: 1,
+      child: Container(
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(8),
+          border: isToday ? Border.all(color: AppColors.accent, width: 1.5) : null,
+        ),
+        child: Text('$day',
+            style: TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: trained ? FontWeight.w700 : FontWeight.w500,
+                fontSize: 11,
+                color: isToday && !trained ? AppColors.accent : fg)),
+      ),
     );
   }
 }
 
 // ── panel 7: photos ──────────────────────────────────────────────────────────
 
-class _PhotoPanel extends StatelessWidget {
-  final PhotoPairV2? photos;
-  const _PhotoPanel({required this.photos});
+/// Self-contained: fetches its own photos and refreshes only itself on
+/// upload/delete, so the rest of the Progress screen never reloads.
+class _PhotoPanel extends StatefulWidget {
+  const _PhotoPanel();
+  @override
+  State<_PhotoPanel> createState() => _PhotoPanelState();
+}
+
+class _PhotoPanelState extends State<_PhotoPanel> {
+  List<PhotoV2> _photos = const [];
+  bool _loaded = false;
+  bool _busy = false;
+  int _page = 0;
+  final _pc = PageController();
+  // Signed URLs are cached by path so swiping doesn't re-request them.
+  final _urls = <String, Future<String?>>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch(toNewest: true);
+  }
+
+  /// Reload just this widget's photos. [toNewest] jumps to the last slide
+  /// (after an upload); otherwise the current page is clamped into range.
+  Future<void> _fetch({bool toNewest = false}) async {
+    final list = await SupabaseService.instance.fetchAllProgressPhotos();
+    if (!mounted) return;
+    setState(() {
+      _photos = list;
+      _loaded = true;
+      _page = list.isEmpty
+          ? 0
+          : (toNewest ? list.length - 1 : _page.clamp(0, list.length - 1));
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_pc.hasClients) _pc.jumpToPage(_page);
+    });
+  }
+
+  @override
+  void dispose() {
+    _pc.dispose();
+    super.dispose();
+  }
+
+  Future<String?> _signed(String path) =>
+      _urls.putIfAbsent(path, () => SupabaseService.instance.signedPhotoUrl(path));
+
+  Future<void> _addPhoto() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1600,
+        imageQuality: 85,
+      );
+      if (picked == null) {
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+      final bytes = await picked.readAsBytes();
+      final ext = picked.name.contains('.') ? picked.name.split('.').last.toLowerCase() : 'jpg';
+      await SupabaseService.instance
+          .uploadProgressPhoto(bytes: bytes, ext: ext == 'png' ? 'png' : 'jpg');
+      if (!mounted) return;
+      setState(() => _busy = false);
+      await _fetch(toNewest: true); // refresh only this widget, land on the new one
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Could not add that photo.')));
+    }
+  }
+
+  Future<void> _deleteCurrent() async {
+    final photos = _photos;
+    if (photos.isEmpty) return;
+    final idx = _page.clamp(0, photos.length - 1);
+    final photo = photos[idx];
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ConfirmSheet(
+        title: 'Delete this photo?',
+        body: 'Taken ${_fmtDayMonth(photo.takenOn)}. This can’t be undone.',
+        confirmLabel: 'Delete',
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await SupabaseService.instance.deleteProgressPhoto(photo.storagePath);
+      _urls.remove(photo.storagePath);
+      if (!mounted) return;
+      await _fetch(); // refresh only this widget, clamp the page
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Could not delete that photo.')));
+    }
+  }
+
+  String _label(int i, int n) =>
+      i == 0 ? 'First' : (i == n - 1 ? 'Latest' : 'Photo ${i + 1}');
+
   @override
   Widget build(BuildContext context) {
-    final p = photos;
-    final hasPair = p != null && p.first != null && p.latest != null;
+    final photos = _photos;
+    final n = photos.length;
+    final page = _page.clamp(0, n == 0 ? 0 : n - 1);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _PanelHead(
+        _PanelHead(
             question: 'Can you see it?',
-            blurb: 'Two photos, weeks apart. The mirror lies day to day; side by side does not.'),
-        if (!hasPair)
-          const _Gated(
-              icon: Icons.add_a_photo_outlined,
-              title: 'Add a photo to start the comparison',
-              blurb: 'One now, one in a month. That gap is where change shows.')
-        else
-          Row(
-            children: [
-              Expanded(child: _PhotoSlot(photo: p.first!, caption: 'First')),
-              const SizedBox(width: 12),
-              Expanded(child: _PhotoSlot(photo: p.latest!, caption: 'Latest')),
-            ],
+            trailing: n > 0 ? _AddPhotoButton(busy: _busy, onTap: _addPhoto) : null),
+        if (!_loaded)
+          const AspectRatio(
+            aspectRatio: 3 / 4,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: AppColors.surfaceSunken,
+                borderRadius: BorderRadius.all(Radius.circular(16)),
+              ),
+              child: Center(
+                  child: SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.textFaint))),
+            ),
+          )
+        else if (n == 0)
+          Pressable(
+            onTap: _addPhoto,
+            child: V2Card(
+              color: AppColors.surfaceSunken,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 22),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(_busy ? Icons.hourglass_top_rounded : Icons.add_a_photo_outlined,
+                      size: 20, color: AppColors.accent),
+                  const SizedBox(height: 10),
+                  Text(_busy ? 'Adding…' : 'Add a photo to start the comparison',
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w500,
+                          fontSize: 13.5,
+                          color: AppColors.textSecondary)),
+                  const SizedBox(height: 4),
+                  const Text('One now, one in a month. That gap is where change shows.',
+                      style: TextStyle(
+                          fontFamily: AppTheme.fontFamily, fontSize: 11.5, height: 1.4, color: AppColors.textMuted)),
+                ],
+              ),
+            ),
+          )
+        else ...[
+          // The main swipable frame — oldest on the left, newest on the right.
+          AspectRatio(
+            aspectRatio: 3 / 4,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                PageView.builder(
+                  controller: _pc,
+                  itemCount: n,
+                  onPageChanged: (i) => setState(() => _page = i),
+                  itemBuilder: (_, i) =>
+                      _GalleryPhoto(photo: photos[i], label: _label(i, n), url: _signed(photos[i].storagePath)),
+                ),
+                // delete (current photo)
+                Positioned(
+                  top: 10,
+                  left: 10,
+                  child: Pressable(
+                    onTap: _deleteCurrent,
+                    child: Container(
+                      width: 32,
+                      height: 32,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.delete_outline_rounded, size: 17, color: Colors.white),
+                    ),
+                  ),
+                ),
+                // count chip
+                Positioned(
+                  top: 10,
+                  right: 10,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text('${page + 1} / $n',
+                        style: const TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 10.5,
+                            color: Colors.white)),
+                  ),
+                ),
+              ],
+            ),
           ),
+          const SizedBox(height: 10),
+          if (n > 1)
+            _Filmstrip(
+              photos: photos,
+              current: page,
+              signed: _signed,
+              onTap: (i) {
+                setState(() => _page = i);
+                _pc.animateToPage(i,
+                    duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
+              },
+            )
+          else
+            const Text('Add another in a few weeks to see the change side by side.',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily, fontSize: 11.5, color: AppColors.textMuted)),
+        ],
       ],
     );
   }
 }
 
-class _PhotoSlot extends StatelessWidget {
-  final PhotoV2 photo;
-  final String caption;
-  const _PhotoSlot({required this.photo, required this.caption});
+class _AddPhotoButton extends StatelessWidget {
+  final bool busy;
+  final VoidCallback onTap;
+  const _AddPhotoButton({required this.busy, required this.onTap});
   @override
   Widget build(BuildContext context) {
-    return AspectRatio(
-      aspectRatio: 3 / 4,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.surfaceSunken,
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              FutureBuilder<String?>(
-                future: SupabaseService.instance.signedPhotoUrl(photo.storagePath),
-                builder: (context, snap) {
-                  final url = snap.data;
-                  if (url == null) {
-                    return const Center(
-                        child: Icon(Icons.image_outlined, size: 26, color: AppColors.textFaint));
-                  }
-                  return Image.network(url,
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, _, _) => const Center(
-                          child: Icon(Icons.broken_image_outlined, size: 26, color: AppColors.textFaint)));
-                },
-              ),
-              // Bottom gradient + label for legibility over the photo.
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(12, 24, 12, 12),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Colors.transparent, Colors.black.withValues(alpha: 0.7)],
-                    ),
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceSunken,
+          border: Border.all(color: AppColors.border),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(busy ? Icons.hourglass_top_rounded : Icons.add_a_photo_outlined,
+                size: 14, color: AppColors.accent),
+            const SizedBox(width: 6),
+            const Text('Add',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11,
+                    color: AppColors.accent)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One full-frame photo in the gallery, with a bottom caption.
+class _GalleryPhoto extends StatelessWidget {
+  final PhotoV2 photo;
+  final String label;
+  final Future<String?> url;
+  const _GalleryPhoto({required this.photo, required this.label, required this.url});
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        decoration: BoxDecoration(
+          color: AppColors.surfaceSunken,
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            FutureBuilder<String?>(
+              future: url,
+              builder: (context, snap) {
+                if (snap.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                      child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.textFaint)));
+                }
+                final u = snap.data;
+                if (u == null) {
+                  return const Center(
+                      child: Icon(Icons.image_outlined, size: 26, color: AppColors.textFaint));
+                }
+                return Image.network(u,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => const Center(
+                        child: Icon(Icons.broken_image_outlined, size: 26, color: AppColors.textFaint)));
+              },
+            ),
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(14, 26, 14, 14),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.transparent, Colors.black.withValues(alpha: 0.72)],
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(caption,
-                          style: const TextStyle(
-                              fontFamily: AppTheme.fontFamily,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 12,
-                              color: Colors.white)),
-                      Text(
-                          '${_fmtDayMonth(photo.takenOn)}'
-                          '${photo.weightKg != null ? ' · ${_n(photo.weightKg!)} kg' : ''}',
-                          style: TextStyle(
-                              fontFamily: AppTheme.fontFamily,
-                              fontSize: 10.5,
-                              color: Colors.white.withValues(alpha: 0.8))),
-                    ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(label,
+                        style: const TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                            color: Colors.white)),
+                    Text(
+                        '${_fmtDayMonth(photo.takenOn)}'
+                        '${photo.weightKg != null ? ' · ${_n(photo.weightKg!)} kg' : ''}',
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontSize: 11,
+                            color: Colors.white.withValues(alpha: 0.85))),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Thumbnail rail under the gallery — oldest → newest, tap to jump.
+class _Filmstrip extends StatelessWidget {
+  final List<PhotoV2> photos;
+  final int current;
+  final Future<String?> Function(String) signed;
+  final ValueChanged<int> onTap;
+  const _Filmstrip(
+      {required this.photos, required this.current, required this.signed, required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 56,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: photos.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (_, i) {
+          final selected = i == current;
+          return Pressable(
+            onTap: () => onTap(i),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(9),
+              child: Container(
+                width: 44,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceSunken,
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(
+                    color: selected ? AppColors.accent : AppColors.border,
+                    width: selected ? 1.5 : 1,
+                  ),
+                ),
+                child: FutureBuilder<String?>(
+                  future: signed(photos[i].storagePath),
+                  builder: (context, snap) {
+                    final u = snap.data;
+                    if (u == null) {
+                      return const Center(
+                          child: Icon(Icons.image_outlined, size: 15, color: AppColors.textFaint));
+                    }
+                    return Opacity(
+                      opacity: selected ? 1 : 0.55,
+                      child: Image.network(u,
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const Center(
+                              child: Icon(Icons.broken_image_outlined, size: 15, color: AppColors.textFaint))),
+                    );
+                  },
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// A compact confirm sheet for a destructive action — pops true on confirm.
+class _ConfirmSheet extends StatelessWidget {
+  final String title;
+  final String body;
+  final String confirmLabel;
+  const _ConfirmSheet({required this.title, required this.body, required this.confirmLabel});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceRaised,
+        border: Border(top: BorderSide(color: AppColors.border)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      padding: EdgeInsets.fromLTRB(22, 10, 22, 22 + MediaQuery.of(context).padding.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 38,
+              height: 4,
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                  color: AppColors.borderStrong, borderRadius: BorderRadius.circular(3)),
+            ),
+          ),
+          Text(title,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                  color: AppColors.textPrimary)),
+          const SizedBox(height: 8),
+          Text(body,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily, fontSize: 13, height: 1.5, color: AppColors.textSecondary)),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: Pressable(
+                  onTap: () => Navigator.of(context).pop(false),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: AppColors.borderStrong),
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: const Text('Keep it',
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                            color: AppColors.textPrimary)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Pressable(
+                  onTap: () => Navigator.of(context).pop(true),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.warn,
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: Text(confirmLabel,
+                        style: const TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                            color: AppColors.onAccent)),
                   ),
                 ),
               ),
             ],
           ),
-        ),
+        ],
       ),
     );
   }
@@ -1121,11 +1826,16 @@ class _FooterNote extends StatelessWidget {
   const _FooterNote();
   @override
   Widget build(BuildContext context) {
-    return Text(
-        'Total volume and streaks are deliberately absent. Volume rewards junk sets, '
-        'and a streak one illness kills tells you nothing about strength.',
-        style: const TextStyle(
-            fontFamily: AppTheme.fontFamily, fontSize: 11, height: 1.5, color: AppColors.textFaint));
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        const Icon(Icons.check_circle_outline_rounded, size: 14, color: AppColors.textFaint),
+        const SizedBox(width: 6),
+        Text("That's everything worth watching — you're all caught up.",
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily, fontSize: 11.5, color: AppColors.textFaint)),
+      ],
+    );
   }
 }
 
@@ -1148,7 +1858,7 @@ class _ErrorBox extends StatelessWidget {
                 style: const TextStyle(
                     fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
             const SizedBox(height: 16),
-            OutlinedButton(onPressed: onRetry, child: const Text('Retry')),
+            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
           ],
         ),
       ),
