@@ -19,7 +19,7 @@ PW=$(grep -m1 '^LOAD_SUPABASE_DB_PASSWORD=' .env | cut -d= -f2- \
 CONN="host=aws-0-ap-northeast-1.pooler.supabase.com port=5432 \
 user=postgres.saiwblhqfyxpwkgnhptd dbname=postgres sslmode=require"
 
-RUNNER=$(mktemp /tmp/db_test_XXXX.sql)
+RUNNER=$(mktemp /tmp/db_test_XXXXXX)
 trap 'rm -f "$RUNNER"' EXIT
 {
   echo "\\set ON_ERROR_STOP on"
