@@ -962,28 +962,45 @@ extension SupabaseServiceV2 on SupabaseService {
     final uid = currentUser?.id;
     if (uid == null) return null;
 
-    // 1. The current training profile — inserted, since handle_new_user()
-    //    creates profiles + user_preferences but not this.
-    await client.from('training_profiles').insert({
-      'user_id': uid,
-      'goal': d.leadGoal.db,
-      'goals': d.goals.map((g) => g.db).toList(),
-      'goal_is_coach_choice': d.coachChoice,
-      'target_direction': d.targetDirection,
-      'target_weight_kg': d.targetWeightKg,
-      'training_weekdays': d.weekdaysIso,
-      'days_per_week': d.weekdaysIso.isEmpty ? 3 : d.weekdaysIso.length,
-      'split_preference': d.splitPreference,
-      'experience': d.experience,
-      'environment': d.environment,
-      // The lifter answered these two steps, so the Profile prompt in
-      // v2_0032 must not ask them again.
-      'intake_confirmed': true,
-      'bar_weight_kg': d.barWeightKg,
-      'has_benched': d.hasBenched,
+    // 1-4. Profile, protein target and injury flags, in ONE transaction.
+    //
+    // These used to be separate inserts. training_profiles and
+    // nutrition_targets are versioned tables with a unique index on
+    // (user_id) WHERE valid_to IS NULL, so a second run failed with 23505 and
+    // the user saw "Couldn't build your plan — try again" forever: RootGate
+    // sends anyone without an active program back here, so a first attempt
+    // that wrote the profile but not the program locked the account out of
+    // the app permanently.
+    //
+    // Superseding and re-inserting cannot be done from here safely — two
+    // round trips with no transaction means a failure between them leaves the
+    // user with no current profile at all. submit_intake does both atomically.
+    await client.rpc('submit_intake', params: {
+      'p': {
+        'goal': d.leadGoal.db,
+        'goals': d.goals.map((g) => g.db).toList(),
+        'goal_is_coach_choice': d.coachChoice,
+        'target_direction': d.targetDirection,
+        'target_weight_kg': d.targetWeightKg,
+        'training_weekdays': d.weekdaysIso,
+        'days_per_week': d.weekdaysIso.isEmpty ? 3 : d.weekdaysIso.length,
+        'split_preference': d.splitPreference,
+        'experience': d.experience,
+        'environment': d.environment,
+        'bar_weight_kg': d.barWeightKg,
+        'has_benched': d.hasBenched,
+        'protein_g': (d.bodyweightKg * 1.8).round(),
+        'constraints': [
+          for (final f in d.flags)
+            {'joint_id': f.jointId, 'label': f.label, 'side': f.side, 'severity': 'mild'},
+          if (d.otherPain.trim().isNotEmpty)
+            {'label': d.otherPain.trim(), 'severity': 'mild'},
+        ],
+      },
     });
 
-    // 2. First weigh-in (the onboarding number is the first body_measurement).
+    // First weigh-in (the onboarding number is the first body_measurement).
+    // Already idempotent via upsert.
     await client.from('body_measurements').upsert({
       'user_id': uid,
       'measured_on': _todayStr(),
@@ -991,41 +1008,10 @@ extension SupabaseServiceV2 on SupabaseService {
       'source': 'manual',
     }, onConflict: 'user_id,measured_on');
 
-    // 2b. Protein target — 1.8 g/kg, the constant used everywhere else this
-    // is shown. Without this row the Body & Fuel card has nothing to bar
-    // against and silently renders as bare numbers with no visual.
-    await client.from('nutrition_targets').insert({
-      'user_id': uid,
-      'protein_g': (d.bodyweightKg * 1.8).round(),
-    });
-
-    // 3. Units preference (row already exists from the signup trigger).
+    // Units preference (row already exists from the signup trigger).
     await client
         .from('user_preferences')
         .update({'units': d.metric ? 'metric' : 'imperial'}).eq('user_id', uid);
-
-    // 4. Injury flags + free-text note.
-    final constraints = <Map<String, dynamic>>[
-      for (final f in d.flags)
-        {
-          'user_id': uid,
-          'joint_id': f.jointId,
-          'label': f.label,
-          'side': f.side,
-          'severity': 'mild',
-          'active_from': _todayStr(),
-        },
-      if (d.otherPain.trim().isNotEmpty)
-        {
-          'user_id': uid,
-          'label': d.otherPain.trim(),
-          'severity': 'mild',
-          'active_from': _todayStr(),
-        },
-    ];
-    if (constraints.isNotEmpty) {
-      await client.from('user_constraints').insert(constraints);
-    }
 
     // 5. Generate the first week (bench calibration only when they've benched).
     final id = await client.rpc('bootstrap_my_program', params: {
