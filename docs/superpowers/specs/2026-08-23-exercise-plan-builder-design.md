@@ -672,6 +672,14 @@ The reward for using the pause feature is that we never ask — which is a real 
 ## 14. Still open
 
 - **Guide illustration pipeline.** §13.3 keeps illustrations for Core, but there's no process for producing new ones as exercises get promoted. Commission, generate, or accept photos indefinitely?
+- **Volume-table tuning — cannot be answered synthetically.** Generating
+  training histories requires assuming a dose-response model, so tuning the
+  table against them recovers the assumption rather than measuring anything.
+  It would produce a confident number with no evidence behind it. This one
+  waits for real lifters or published literature; there is no shortcut.
+  `supabase/tests/v2_matrix_sweep.sql` covers what synthetic data legitimately
+  can: that every plan SHAPE is structurally sound, which is a different claim
+  from the volumes being right.
 - **Volume-table tuning.** The numbers in §6 are defensible starting points, not measured. Once Progress has real per-muscle data across users, they should be revisited.
 
 ### Known limitation shipped in Phase 0 — Plan 03 must close it
