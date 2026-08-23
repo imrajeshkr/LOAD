@@ -404,11 +404,29 @@ class _OnboardingV2State extends State<OnboardingV2> {
                       const Icon(Icons.error_outline, size: 15, color: AppColors.warn),
                       const SizedBox(width: 7),
                       Expanded(
-                        child: Text("Couldn't build your plan — try again.",
-                            style: const TextStyle(
-                                fontFamily: AppTheme.fontFamily,
-                                fontSize: 12,
-                                color: AppColors.warn)),
+                        // The real exception is shown, not swallowed. The
+                        // generic "try again" that used to live here hid the
+                        // cause from the person best placed to report it, and
+                        // cost several rounds of guesswork diagnosing a
+                        // failure the app already knew the answer to.
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("Couldn't build your plan.",
+                                style: TextStyle(
+                                    fontFamily: AppTheme.fontFamily,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.warn)),
+                            const SizedBox(height: 3),
+                            Text(_error!,
+                                style: const TextStyle(
+                                    fontFamily: AppTheme.fontFamily,
+                                    fontSize: 10.5,
+                                    height: 1.4,
+                                    color: AppColors.textMuted)),
+                          ],
+                        ),
                       ),
                     ],
                   ),
