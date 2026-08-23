@@ -218,7 +218,8 @@ class _TrainerTabState extends State<TrainerTab> {
     if (p == null) return;
     Haptics.success();
     try {
-      await SupabaseService.instance.resolveCoachProposal(p.id, accept: accept);
+      await SupabaseService.instance
+          .resolveCoachProposal(p.id, accept: accept, kind: p.kind);
       await _load(silent: true);
     } catch (_) {
       Haptics.error();

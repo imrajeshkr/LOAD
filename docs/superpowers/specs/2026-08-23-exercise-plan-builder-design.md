@@ -278,6 +278,33 @@ Two independent kinds of transition:
 
 ### 8.1 Level transition is earned, not timed
 
+> **Implemented by `v2_0036`–`v2_0041` (applied).** Beginner → intermediate is
+> live: detector, coach proposal, snooze rules, versioned profile on accept,
+> and a volume ramp. Three things the implementation had to settle that the
+> spec left contradictory or underspecified:
+>
+> - **§7 and §8.1 contradicted each other.** §7 gave the deload to advanced
+>   only; §8.1 requires "the stall survived one deload" before promoting a
+>   beginner. Under §7 as written no beginner ever receives a deload, so the
+>   condition was unsatisfiable and the detector would have been dead code.
+>   `v2_0036` gives beginners the deload too, which also matches how novice
+>   linear progression actually works: stall, reset ~10%, build back, and if
+>   you stall again you have stopped being a novice.
+> - **The volume ramp was not optional.** Promotion moves the weekly budget
+>   from 9 sets/muscle to 14 (+55%), past §8.3's own 30% threshold. §8.3 hoped
+>   to derive the ramp with no schema change; that is not derivable, because
+>   `train_screen` cannot know the archived program's volume. `v2_0040` adds
+>   one nullable date to `programs`, and it expires on its own.
+> - **Accepting applies immediately, not at a week boundary** (§13.6). The
+>   `valid_to is null` convention for "current profile" is queried in many
+>   places, and scheduling a future version would mean changing all of them.
+>   The ramp is the real protection against the volume jump, so the boundary
+>   buys little.
+>
+> **Still open from this section:** the `Returning` state (declared pause vs
+> 3-week silence, §13.8) and the rest of §8.3 — continuity of in-progress
+> lifts, deload on structural change, and showing the kept/added/dropped diff.
+
 Training age is not calendar time. The honest definition is **which progression scheme still works**:
 
 | Level | Definition | Progression that still works |
