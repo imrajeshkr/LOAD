@@ -145,6 +145,26 @@ class SwapCandidateV2 {
       ];
 }
 
+/// What a rebuild actually did, from `program_diff()`. Shown afterwards
+/// rather than in the confirmation sheet — the sheet runs before the new
+/// program exists, and the question a lifter is asking is "what did you just
+/// do to my plan", not "what might you do".
+class ProgramDiffV2 {
+  final List<String> kept;
+  final List<String> added;
+  final List<String> dropped;
+
+  const ProgramDiffV2({required this.kept, required this.added, required this.dropped});
+
+  bool get isEmpty => added.isEmpty && dropped.isEmpty;
+
+  factory ProgramDiffV2.fromJson(Map<String, dynamic> j) => ProgramDiffV2(
+        kept: ((j['kept'] as List?) ?? const []).cast<String>(),
+        added: ((j['added'] as List?) ?? const []).cast<String>(),
+        dropped: ((j['dropped'] as List?) ?? const []).cast<String>(),
+      );
+}
+
 /// The whole Train-tab / today payload from `train_screen()`.
 class TrainScreenV2 {
   final DateTime today;
