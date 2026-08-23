@@ -11,6 +11,7 @@ import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/v2_widgets.dart';
 import 'session_flow_screen.dart';
+import 'swap_sheet.dart';
 
 /// The calendar day the user last left the Train tab on. The post-session
 /// "next time these go up" card shows right after finishing and stays until
@@ -427,13 +428,23 @@ class _TrainTabState extends State<TrainTab> {
     ];
   }
 
+  /// Swap a lift for another that trains the same muscle. Only offered before
+  /// the session starts — `_beforeState` is the only caller that passes this.
+  Future<void> _openSwap(PlanExerciseV2 ex) async {
+    final swapped = await showSwapSheet(context, ex);
+    if (swapped && mounted) {
+      _snack('Swapped ${ex.name}.');
+      _load();
+    }
+  }
+
   // ── BEFORE: training day ──────────────────────────────────────────────────
   List<Widget> _beforeState(TrainScreenV2 plan) => [
         if (_note != null) ...[
           _MorningNoteCard(note: _note!),
           const SizedBox(height: 16),
         ],
-        _PlanList(plan: plan),
+        _PlanList(plan: plan, onSwap: _openSwap),
         if (_fuel != null) ...[
           const SizedBox(height: 16),
           _BodyFuelCard(fuel: _fuel!, onQuickAdd: _logProtein),
@@ -1617,7 +1628,8 @@ class _MorningNoteCard extends StatelessWidget {
 
 class _PlanList extends StatelessWidget {
   final TrainScreenV2 plan;
-  const _PlanList({required this.plan});
+  final void Function(PlanExerciseV2 ex)? onSwap;
+  const _PlanList({required this.plan, this.onSwap});
 
   @override
   Widget build(BuildContext context) {
@@ -1633,7 +1645,7 @@ class _PlanList extends StatelessWidget {
                 color: AppColors.textMuted)),
         const SizedBox(height: 10),
         for (final e in plan.exercises) ...[
-          _PlanRow(ex: e),
+          _PlanRow(ex: e, onSwap: onSwap == null ? null : () => onSwap!(e)),
           const SizedBox(height: 8),
         ],
       ],
@@ -1677,12 +1689,15 @@ class _StartSessionBar extends StatelessWidget {
 
 class _PlanRow extends StatelessWidget {
   final PlanExerciseV2 ex;
-  const _PlanRow({required this.ex});
+  /// Null once the session is under way — swapping a lift mid-session would
+  /// orphan the sets already logged against it.
+  final VoidCallback? onSwap;
+  const _PlanRow({required this.ex, this.onSwap});
 
   @override
   Widget build(BuildContext context) {
     final started = ex.doneSets > 0;
-    return ClipRRect(
+    final row = ClipRRect(
       borderRadius: BorderRadius.circular(18),
       child: Container(
         decoration: BoxDecoration(
@@ -1760,6 +1775,11 @@ class _PlanRow extends StatelessWidget {
         ),
       ),
     );
+
+    // Not tappable during a live session: swapping a lift you have already
+    // logged sets against would orphan them.
+    if (onSwap == null) return row;
+    return Pressable(haptic: PressFx.light, onTap: onSwap, child: row);
   }
 }
 

@@ -18,14 +18,22 @@ TEST_FILE="${1:?usage: db_test.sh [-m migration.sql]... <test.sql>}"
 # migration carried begin/commit and its inserts went to production during what
 # was supposed to be a dry run. The harness owns the transaction — refuse any
 # file that tries to own it too.
+# Dollar-quoted bodies are stripped first: plpgsql uses BEGIN/END as block
+# syntax, so a naive grep flags every function that has an `end;` in it.
 for f in "${MIGRATIONS[@]:-}" "$TEST_FILE"; do
   [ -n "$f" ] || continue
-  if grep -Eqi '^[[:space:]]*(commit|begin|rollback|end)[[:space:]]*;' "$f"; then
-    echo "refusing to run $f: it contains its own transaction control." >&2
-    echo "db_test.sh wraps files in BEGIN/ROLLBACK; an inner COMMIT would" >&2
-    echo "persist changes during a dry run. Remove it and re-run." >&2
-    exit 3
-  fi
+  python3 - "$f" <<'PY' || exit 3
+import re, sys
+src = open(sys.argv[1]).read()
+bare = re.sub(r'\$(\w*)\$.*?\$\1\$', '', src, flags=re.S)   # drop $$ ... $$ bodies
+hit = re.search(r'(?im)^[ \t]*(commit|begin|rollback)[ \t]*;', bare)
+if hit:
+    print(f"refusing to run {sys.argv[1]}: it contains its own "
+          f"{hit.group(1).upper()};", file=sys.stderr)
+    print("db_test.sh wraps files in BEGIN/ROLLBACK; an inner COMMIT would "
+          "persist changes during a dry run. Remove it and re-run.", file=sys.stderr)
+    raise SystemExit(1)
+PY
 done
 
 PW=$(grep -m1 '^LOAD_SUPABASE_DB_PASSWORD=' .env | cut -d= -f2- \

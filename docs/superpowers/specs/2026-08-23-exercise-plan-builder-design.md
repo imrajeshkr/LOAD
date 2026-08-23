@@ -370,6 +370,23 @@ This is the honest answer to "how does the plan change over time," and load prog
 
 ## 9. Exercise swap
 
+> **Implemented by `v2_0034`/`v2_0035` (applied).** Two departures from the
+> sketch above, both forced by what the code actually does:
+>
+> 1. **A table, not an override on `program_day_exercises`.** That row cannot
+>    survive regeneration — `bootstrap_user_program` archives the program and
+>    rebuilds `program_days` from scratch, deleting it. `exercise_swaps` keys
+>    the substitution on the *replaced exercise*, so it survives by
+>    construction, and `v2_0035` applies it as a post-pass on every rebuild.
+> 2. **No "less data" note on Extended candidates.** The note was going to be
+>    an apology for the injury filter being blind to them. `v2_0033` gave the
+>    whole catalog joint data instead, so every candidate is genuinely vetted —
+>    a shoulder flag drops overhead-press alternatives from 41 to 18 — and
+>    there is nothing left to disclaim.
+>
+> The picker is a list rather than a grid of thumbnails: a bench-press swap
+> offers 65 candidates and 6 have a guide image.
+
 "Sure could swap the exercise if they want to do a different one for the same muscle."
 
 - Entry point: tap an exercise in the Train tab plan list → **Swap**.

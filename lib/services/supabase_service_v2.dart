@@ -895,6 +895,32 @@ extension SupabaseServiceV2 on SupabaseService {
   }
 
   /// Body-map joints with their silhouette coordinates.
+  /// Alternatives for [exerciseId] that train the same muscle and clear the
+  /// same equipment / training-age / injury filters the generator uses. Core
+  /// first — the server orders by nothing, so we sort here.
+  Future<List<SwapCandidateV2>> fetchSwapCandidates(String exerciseId) async {
+    final rows = await client
+        .rpc('swap_candidates', params: {'p_exercise_id': exerciseId});
+    final list = (rows as List)
+        .cast<Map<String, dynamic>>()
+        .map(SwapCandidateV2.fromJson)
+        .toList();
+    list.sort((a, b) {
+      if (a.isCore != b.isCore) return a.isCore ? -1 : 1;
+      return a.name.compareTo(b.name);
+    });
+    return list;
+  }
+
+  /// Record a standing substitution and apply it to the live plan.
+  Future<void> swapExercise(String fromId, String toId) =>
+      client.rpc('swap_exercise',
+          params: {'p_from_exercise_id': fromId, 'p_to_exercise_id': toId});
+
+  /// Drop the substitution and put the original lift back.
+  Future<void> unswapExercise(String fromId) =>
+      client.rpc('unswap_exercise', params: {'p_from_exercise_id': fromId});
+
   Future<List<JointV2>> fetchJoints() async {
     final rows = await client
         .from('joints')

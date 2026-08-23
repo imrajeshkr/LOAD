@@ -106,6 +106,45 @@ class PlanExerciseV2 {
   }
 }
 
+/// One alternative offered by `swap_candidates()`. Core rows are hand-authored
+/// and illustrated; Extended rows come from the imported catalog and mostly
+/// have no guide image, which is why the picker is a list rather than a grid.
+class SwapCandidateV2 {
+  final String exerciseId;
+  final String name;
+  final bool isCore;
+  final String? mechanic;   // compound | isolation
+  final String? equipment;
+  final String muscle;
+  final String? demoPath;
+
+  const SwapCandidateV2({
+    required this.exerciseId,
+    required this.name,
+    required this.isCore,
+    required this.mechanic,
+    required this.equipment,
+    required this.muscle,
+    required this.demoPath,
+  });
+
+  factory SwapCandidateV2.fromJson(Map<String, dynamic> j) => SwapCandidateV2(
+        exerciseId: j['exercise_id'] as String,
+        name: (j['name'] as String?) ?? '',
+        isCore: (j['is_core'] as bool?) ?? false,
+        mechanic: j['mechanic'] as String?,
+        equipment: j['equipment'] as String?,
+        muscle: (j['muscle'] as String?) ?? '',
+        demoPath: j['demo_path'] as String?,
+      );
+
+  /// Short descriptors under the name — what a lifter scans to decide.
+  List<String> get tags => [
+        if (equipment != null && equipment!.isNotEmpty) equipment!,
+        if (mechanic != null && mechanic!.isNotEmpty) mechanic!,
+      ];
+}
+
 /// The whole Train-tab / today payload from `train_screen()`.
 class TrainScreenV2 {
   final DateTime today;
