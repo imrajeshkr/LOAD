@@ -526,6 +526,26 @@ The eight open questions from the first draft, resolved.
 
 ### 13.1 Rollout — lazy migration, never mid-week
 
+> **Implemented by `v2_0045` (applied).** This section was the last one
+> outstanding, and skipping it had quietly cost everything else: plans 03-07
+> only reach a lifter when their program is rebuilt, and nothing rebuilds a
+> working plan. All seven live programs were still whatever the generator
+> produced on signup — three sessions each, including users training six and
+> seven days a week, none of them training abs, none goal-aware, and `ends_on`
+> null so block rollover could never fire them out of it.
+>
+> `programs.generator_version` is the column this section asked for. Every
+> existing row is version 1; the current generator is 3. Anything older is
+> rebuilt at the lifter's next week boundary — defined as "no completed session
+> in the current week" rather than "is it Monday", so someone who only opens
+> the app midweek is not stranded for another seven days.
+>
+> It forces rather than offers. §13.1 reserves that for actively broken plans,
+> and a seven-day lifter given three sessions, with nothing training abs, is
+> not a stylistic difference. The note tells them afterwards in terms of their
+> training, never ours — "your training days now each get their own session",
+> not "we upgraded the algorithm".
+
 Neither "auto-regenerate everyone" nor "prompt and wait." Both are wrong at the edges: the first rewrites a week someone has already organised their life around, the second strands users on logic we know is worse.
 
 | User | Behaviour |
