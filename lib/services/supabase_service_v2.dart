@@ -631,7 +631,8 @@ extension SupabaseServiceV2 on SupabaseService {
       client
           .from('training_profiles')
           .select('goals, goal_is_coach_choice, target_weight_kg, '
-              'target_direction, training_weekdays, split_preference, bar_weight_kg, plate_sizes_kg')
+              'target_direction, training_weekdays, split_preference, experience, '
+              'environment, bar_weight_kg, plate_sizes_kg')
           .eq('user_id', uid)
           .isFilter('valid_to', null)
           .maybeSingle(),
@@ -701,6 +702,8 @@ extension SupabaseServiceV2 on SupabaseService {
       email: currentUser?.email,
       avatarUrl: avatarUrl,
       splitPreference: tp['split_preference'] as String? ?? 'no_preference',
+      experience: tp['experience'] as String?,
+      environment: tp['environment'] as String?,
       weekdaySlots: weekdaySlots,
       sessionsTotal: (gates['sessions_total'] as num?)?.toInt() ?? 0,
       weeksTraining: (gates['weeks_of_history'] as num?)?.toInt() ?? 0,
@@ -917,6 +920,8 @@ extension SupabaseServiceV2 on SupabaseService {
       'training_weekdays': d.weekdaysIso,
       'days_per_week': d.weekdaysIso.isEmpty ? 3 : d.weekdaysIso.length,
       'split_preference': d.splitPreference,
+      'experience': d.experience,
+      'environment': d.environment,
       'bar_weight_kg': d.barWeightKg,
       'has_benched': d.hasBenched,
     });

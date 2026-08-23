@@ -19,7 +19,7 @@ class OnboardingV2 extends StatefulWidget {
   State<OnboardingV2> createState() => _OnboardingV2State();
 }
 
-const _steps = ['goal', 'body', 'days', 'bar', 'map', 'review'];
+const _steps = ['goal', 'body', 'days', 'experience', 'place', 'bar', 'map', 'review'];
 
 class _GoalMeta {
   final IconData icon;
@@ -80,6 +80,8 @@ class _OnboardingV2State extends State<OnboardingV2> {
   double _target = 76;
   final List<int> _weekdays = [1, 3, 5]; // ISO
   String? _split; // full_body | upper_lower | push_pull_legs
+  String? _experience; // beginner | intermediate | advanced
+  String? _environment; // commercial_gym | home_gym | bodyweight_only
   bool _benched = true;
   double _barKg = 20;
   final List<double> _plates = [];
@@ -140,6 +142,8 @@ class _OnboardingV2State extends State<OnboardingV2> {
         'goal' => _goals.isNotEmpty || _coachChoice,
         'body' => _targetMode != null,
         'days' => _dayCount > 0 && _split != null,
+        'experience' => _experience != null,
+        'place' => _environment != null,
         _ => true,
       };
 
@@ -211,6 +215,8 @@ class _OnboardingV2State extends State<OnboardingV2> {
           : (_targetMode == 'same' ? _bw : null),
       weekdaysIso: List.of(_weekdays)..sort(),
       splitPreference: _split ?? 'full_body',
+      experience: _experience ?? 'beginner',
+      environment: _environment ?? 'commercial_gym',
       barWeightKg: _barKg,
       hasBenched: _benched,
       benchStartKg: _benchTotal,
@@ -461,6 +467,8 @@ class _OnboardingV2State extends State<OnboardingV2> {
         'goal' => ('What are we chasing?', "Pick as many as fit. If two pull against each other I'll tell you which one leads."),
         'body' => ('Where are you starting?', 'Drag for the rough number, tap ± to land it exactly.'),
         'days' => ('Which days are yours?', 'Tap the days you can actually show up. Be honest, not ambitious.'),
+        'experience' => ('How long have you trained?', 'Not a label — it just tells me how fast to add weight and how much work you can recover from.'),
+        'place' => ('Where do you train?', 'This decides which equipment I am allowed to program. I will never put a machine in your plan that you cannot reach.'),
         'bar' => ('How heavy is your bench?', 'One honest number sets the starting load for every press. I move it after your first set, so a low guess costs nothing.'),
         'map' => ('Anything that hurts?', "Tap it on the body. I'll program around it and warn you when a lift gets close."),
         _ => ('Look right?', 'Tap anything to change it. Nothing is saved until you build.'),
@@ -470,6 +478,8 @@ class _OnboardingV2State extends State<OnboardingV2> {
         'goal' => _goalStep(),
         'body' => _bodyStep(),
         'days' => _daysStep(),
+        'experience' => _experienceStep(),
+        'place' => _placeStep(),
         'bar' => _barStep(),
         'map' => _mapStep(),
         _ => _reviewStep(),
@@ -558,6 +568,98 @@ class _OnboardingV2State extends State<OnboardingV2> {
           ),
         ),
       ),
+    );
+  }
+
+  /// A single-select card, styled like the goal cards. Used by the experience
+  /// and place steps.
+  Widget _choiceCard({
+    required String title,
+    required String sub,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 9),
+      child: Pressable(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+          decoration: BoxDecoration(
+            color: selected ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
+            border: Border.all(color: selected ? AppColors.accent : AppColors.border),
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(title,
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14.5,
+                            color: selected ? AppColors.accent : AppColors.textPrimary)),
+                    const SizedBox(height: 3),
+                    Text(sub,
+                        style: const TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontSize: 11.5,
+                            height: 1.45,
+                            color: AppColors.textMuted)),
+                  ],
+                ),
+              ),
+              if (selected)
+                const Icon(Icons.check_circle, size: 20, color: AppColors.accent),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── step: experience ──────────────────────────────────────────────────────
+  Widget _experienceStep() {
+    const options = [
+      ('Under 6 months', 'beginner', 'Weight can climb almost every session.'),
+      ('6 months to 2 years', 'intermediate', 'Weight climbs across the week, not every session.'),
+      ('Over 2 years', 'advanced', 'Progress comes in blocks, with lighter weeks built in.'),
+    ];
+    return Column(
+      children: [
+        for (final (label, value, sub) in options)
+          _choiceCard(
+            title: label,
+            sub: sub,
+            selected: _experience == value,
+            onTap: () => setState(() => _experience = value),
+          ),
+      ],
+    );
+  }
+
+  // ── step: place ───────────────────────────────────────────────────────────
+  Widget _placeStep() {
+    const options = [
+      ('A commercial gym', 'commercial_gym', 'Full racks, machines and cables.'),
+      ('A home gym', 'home_gym', 'Barbell, dumbbells and a bench — no machines.'),
+      // 'bodyweight_only' is intentionally omitted: the current catalog has no
+      // bodyweight leg exercises, so it would generate an empty Leg day.
+      // Restored when the catalog import lands.
+    ];
+    return Column(
+      children: [
+        for (final (label, value, sub) in options)
+          _choiceCard(
+            title: label,
+            sub: sub,
+            selected: _environment == value,
+            onTap: () => setState(() => _environment = value),
+          ),
+      ],
     );
   }
 
@@ -1515,26 +1617,52 @@ class _OnboardingV2State extends State<OnboardingV2> {
         value: _coachChoice
             ? "Your call, coach"
             : (_goals.isEmpty ? 'Not picked' : _goals.map((g) => g.label).join(' · ')),
-        step: 0,
+        step: _steps.indexOf('goal'),
         icon: Icons.flag_outlined,
         span: 2,
         warm: false
       ),
-      (label: 'Bodyweight', value: '${_disp(_bw)} ${_metric ? 'kg' : 'lb'}', step: 1, icon: Icons.monitor_weight_outlined, span: 1, warm: false),
+      (label: 'Bodyweight', value: '${_disp(_bw)} ${_metric ? 'kg' : 'lb'}', step: _steps.indexOf('body'), icon: Icons.monitor_weight_outlined, span: 1, warm: false),
       (
         label: 'Target',
         value: (_targetMode == 'none' || _targetMode == null)
             ? 'None'
             : '${_disp(_target)} ${_metric ? 'kg' : 'lb'}',
-        step: 1,
+        step: _steps.indexOf('body'),
         icon: Icons.flag_circle_outlined,
         span: 1,
         warm: false
       ),
-      (label: 'Week', value: '$_dayCount days', step: 2, icon: Icons.calendar_month_outlined, span: 1, warm: false),
-      (label: 'Bench start', value: _benched ? '${_n(_benchTotal)} kg' : 'Bar only', step: 3, icon: Icons.fitness_center, span: 1, warm: false),
-      (label: 'Split', value: _splitLabel(), step: 2, icon: Icons.view_week_outlined, span: 2, warm: false),
-      (label: 'Protein', value: '${(_bw * 1.8).round()} g a day', step: 1, icon: Icons.restaurant, span: 2, warm: false),
+      (label: 'Week', value: '$_dayCount days', step: _steps.indexOf('days'), icon: Icons.calendar_month_outlined, span: 1, warm: false),
+      (
+        label: 'Training age',
+        value: switch (_experience) {
+          'beginner' => 'Under 6 months',
+          'intermediate' => '6 months to 2 years',
+          'advanced' => 'Over 2 years',
+          _ => 'Not picked',
+        },
+        step: _steps.indexOf('experience'),
+        icon: Icons.timeline_outlined,
+        span: 1,
+        warm: false
+      ),
+      (
+        label: 'Where you train',
+        value: switch (_environment) {
+          'commercial_gym' => 'Commercial gym',
+          'home_gym' => 'Home gym',
+          'bodyweight_only' => 'No equipment',
+          _ => 'Not picked',
+        },
+        step: _steps.indexOf('place'),
+        icon: Icons.place_outlined,
+        span: 1,
+        warm: false
+      ),
+      (label: 'Bench start', value: _benched ? '${_n(_benchTotal)} kg' : 'Bar only', step: _steps.indexOf('bar'), icon: Icons.fitness_center, span: 1, warm: false),
+      (label: 'Split', value: _splitLabel(), step: _steps.indexOf('days'), icon: Icons.view_week_outlined, span: 2, warm: false),
+      (label: 'Protein', value: '${(_bw * 1.8).round()} g a day', step: _steps.indexOf('body'), icon: Icons.restaurant, span: 2, warm: false),
       (
         label: 'Working around',
         value: (_flags.isNotEmpty || _painCtrl.text.trim().isNotEmpty)
@@ -1543,7 +1671,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
                 _painCtrl.text.trim(),
               ].where((x) => x.isNotEmpty).join(' · ')
             : 'Nothing flagged',
-        step: 4,
+        step: _steps.indexOf('map'),
         icon: Icons.healing_outlined,
         span: 2,
         warm: _flags.isNotEmpty || _painCtrl.text.trim().isNotEmpty

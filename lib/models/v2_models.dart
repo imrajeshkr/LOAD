@@ -899,6 +899,8 @@ class ProfileDataV2 {
   final List<int> trainingWeekdays; // ISO 1=Mon..7=Sun
   /// Chosen split: push_pull_legs | upper_lower | full_body | no_preference.
   final String splitPreference;
+  final String? experience;   // beginner | intermediate | advanced
+  final String? environment;  // commercial_gym | home_gym | bodyweight_only
   /// Weekday (ISO 1=Mon..7=Sun) → the session label the plan puts there
   /// ("Push day", "Upper body", …). Empty on rest weekdays / older payloads.
   final Map<int, String> weekdaySlots;
@@ -921,6 +923,8 @@ class ProfileDataV2 {
     required this.targetDirection,
     required this.trainingWeekdays,
     this.splitPreference = 'no_preference',
+    this.experience,
+    this.environment,
     this.weekdaySlots = const {},
     required this.barWeightKg,
     required this.plateSizes,
@@ -1014,6 +1018,12 @@ class OnboardingDraft {
   final double? targetWeightKg;
   final List<int> weekdaysIso; // 1..7
   final String splitPreference; // full_body | upper_lower | push_pull_legs
+  /// beginner | intermediate | advanced — gates exercise difficulty, volume
+  /// ceiling, start loads and progression rate.
+  final String experience;
+  /// commercial_gym | home_gym | bodyweight_only — gates which equipment the
+  /// generator may select.
+  final String environment;
   final double barWeightKg;
   final bool hasBenched;
   final double? benchStartKg; // calibrated total, null when never benched
@@ -1029,6 +1039,8 @@ class OnboardingDraft {
     required this.targetWeightKg,
     required this.weekdaysIso,
     required this.splitPreference,
+    required this.experience,
+    required this.environment,
     required this.barWeightKg,
     required this.hasBenched,
     required this.benchStartKg,
