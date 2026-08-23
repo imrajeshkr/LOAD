@@ -1065,7 +1065,17 @@ extension SupabaseServiceV2 on SupabaseService {
   /// Resolve a note's decision (accept/reject). Records the decision on the
   /// proposal; actually writing the program change forward is a server task
   /// (F7 — `/coach/confirm` only executes `log_sets` today).
-  Future<void> resolveCoachProposal(String proposalId, {required bool accept}) async {
+  Future<void> resolveCoachProposal(String proposalId,
+      {required bool accept, String kind = 'adjust_program'}) async {
+    // A level change is not just a status flip: accepting it closes the current
+    // training_profiles row, opens a new one at the new level, and rebuilds the
+    // program. Writing 'confirmed' straight to the table would mark it agreed
+    // and change nothing.
+    if (kind == 'level_change') {
+      await client.rpc('resolve_level_change',
+          params: {'p_proposal_id': proposalId, 'p_accept': accept});
+      return;
+    }
     await client
         .from('coach_proposals')
         .update({
