@@ -913,6 +913,12 @@ class ProfileDataV2 {
   final String splitPreference;
   final String? experience;   // beginner | intermediate | advanced
   final String? environment;  // commercial_gym | home_gym | bodyweight_only
+
+  /// False when [experience]/[environment] came from a default or backfill
+  /// rather than from the lifter. Profile asks once while this is false —
+  /// the values drive catalog filtering and the whole progression scheme,
+  /// so a wrong guess is not cosmetic.
+  final bool intakeConfirmed;
   /// Weekday (ISO 1=Mon..7=Sun) → the session label the plan puts there
   /// ("Push day", "Upper body", …). Empty on rest weekdays / older payloads.
   final Map<int, String> weekdaySlots;
@@ -925,6 +931,7 @@ class ProfileDataV2 {
   const ProfileDataV2({
     required this.displayName,
     required this.email,
+    this.intakeConfirmed = true,
     this.avatarUrl,
     required this.sessionsTotal,
     required this.weeksTraining,
