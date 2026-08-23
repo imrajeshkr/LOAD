@@ -47,6 +47,7 @@ declare
   v_above  int;
   v_unsafe int;
   v_ext    int;
+  v_gap    int;
 begin
   select id into v_uid from profiles order by created_at limit 1;
   perform set_config('request.jwt.claims', json_build_object('sub', v_uid)::text, true);
@@ -117,6 +118,38 @@ begin
       join exercises e on e.id = pde.exercise_id
      where pd.program_id = v_prog and not e.is_core;
 
+    -- Every movement pattern the lifter CAN train must actually be trained.
+    -- This is the check that matters most: Upper/Lower shipped with no pull
+    -- work at all, and no split trained abs, and neither showed up as an empty
+    -- day or a short session. Measured against what is reachable for this
+    -- environment and training age, so a pattern with no available lifts is
+    -- not counted against the plan — that is the catalog's problem, not the
+    -- generator's.
+    select count(*) into v_gap from (
+      select e.pattern from exercises e
+       where e.owner_id is null and e.is_core
+         and e.load_type in ('weight_reps','bodyweight_reps')
+         and e.min_experience <= v_exp::experience_level
+         and not exists (
+               select 1 from exercise_equipment ee
+                where ee.exercise_id = e.id and ee.is_required
+                  and not exists (select 1 from environment_equipment env
+                                   where env.equipment_id = ee.equipment_id
+                                     and env.environment = v_env::train_environment))
+         and not exists (
+               select 1 from exercise_joints ej
+                 join user_constraints uc on uc.joint_id = ej.joint_id
+                                         and uc.user_id = v_uid
+                                         and uc.active_to is null
+                where ej.exercise_id = e.id and ej.stress_level = 'severe')
+       group by e.pattern
+      except
+      select e2.pattern from program_day_exercises pde
+        join program_days pd on pd.id = pde.program_day_id
+        join exercises e2 on e2.id = pde.exercise_id
+       where pd.program_id = v_prog
+       group by e2.pattern) g;
+
     if v_empty > 0 then
       raise notice 'FAIL % — % empty day(s)', v_case, v_empty; v_fail := v_fail + 1;
     elsif v_min < 2 then
@@ -130,6 +163,9 @@ begin
       v_fail := v_fail + 1;
     elsif v_ext > 0 then
       raise notice 'FAIL % — % Extended lift(s) auto-prescribed', v_case, v_ext;
+      v_fail := v_fail + 1;
+    elsif v_gap > 0 then
+      raise notice 'FAIL % — % trainable pattern(s) never trained', v_case, v_gap;
       v_fail := v_fail + 1;
     end if;
 

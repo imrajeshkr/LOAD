@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # 02:00 UTC daily. The generator sweep reads the exercise catalog, so a
+    # data change — promoting a lift to Core, editing min_experience — can
+    # break a plan shape without any commit to trigger a run.
+    - cron: '0 2 * * *'
 
 jobs:
   flutter:
@@ -60,6 +65,7 @@ jobs:
         env:
           LOAD_SUPABASE_DB_PASSWORD: ${{ secrets.LOAD_SUPABASE_DB_PASSWORD }}
         run: |
+          echo "HAS_SECRET=$([ -n "$LOAD_SUPABASE_DB_PASSWORD" ] && echo true || echo false)" >> "$GITHUB_ENV"
           if [ -z "$LOAD_SUPABASE_DB_PASSWORD" ]; then
             # A green check that ran nothing is worse than no check, so say it
             # loudly in the job summary rather than only in a log line.
@@ -86,5 +92,20 @@ jobs:
               echo FAIL; echo "$out" | grep 'ERROR' | head -3; fail=1
             fi
           done
-          rm -f .env
           exit $fail
+
+      # Runs in ~18s against the live catalog, so there is no reason to keep it
+      # out of the pipeline. Kept as its own step because a failure here means
+      # something quite different from a suite failure: not "this behaviour
+      # broke" but "some combination of inputs no longer produces a usable
+      # plan".
+      - name: Generator coverage sweep (275 plan shapes)
+        if: env.HAS_SECRET == 'true'
+        env:
+          LOAD_SUPABASE_DB_PASSWORD: ${{ secrets.LOAD_SUPABASE_DB_PASSWORD }}
+        run: |
+          printf 'LOAD_SUPABASE_DB_PASSWORD=%s\n' "$LOAD_SUPABASE_DB_PASSWORD" > .env
+          out=$(./tool/db_test.sh supabase/tests/v2_matrix_sweep.sql 2>&1)
+          rm -f .env
+          echo "$out" | grep -E 'FAIL|swept|SWEEP' | sed 's/.*NOTICE:  //'
+          echo "$out" | grep -q 'ERROR' && exit 1 || exit 0
