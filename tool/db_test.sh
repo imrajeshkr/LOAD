@@ -12,6 +12,30 @@ MIGRATIONS=()
 while [ "${1:-}" = "-m" ]; do MIGRATIONS+=("$2"); shift 2; done
 TEST_FILE="${1:?usage: db_test.sh [-m migration.sql]... <test.sql>}"
 
+# A file containing its own COMMIT closes the wrapping transaction below, and
+# everything after it is written to the live database while this script still
+# prints "rolled back, nothing persisted". That has happened once: a generated
+# migration carried begin/commit and its inserts went to production during what
+# was supposed to be a dry run. The harness owns the transaction — refuse any
+# file that tries to own it too.
+# Dollar-quoted bodies are stripped first: plpgsql uses BEGIN/END as block
+# syntax, so a naive grep flags every function that has an `end;` in it.
+for f in "${MIGRATIONS[@]:-}" "$TEST_FILE"; do
+  [ -n "$f" ] || continue
+  python3 - "$f" <<'PY' || exit 3
+import re, sys
+src = open(sys.argv[1]).read()
+bare = re.sub(r'\$(\w*)\$.*?\$\1\$', '', src, flags=re.S)   # drop $$ ... $$ bodies
+hit = re.search(r'(?im)^[ \t]*(commit|begin|rollback)[ \t]*;', bare)
+if hit:
+    print(f"refusing to run {sys.argv[1]}: it contains its own "
+          f"{hit.group(1).upper()};", file=sys.stderr)
+    print("db_test.sh wraps files in BEGIN/ROLLBACK; an inner COMMIT would "
+          "persist changes during a dry run. Remove it and re-run.", file=sys.stderr)
+    raise SystemExit(1)
+PY
+done
+
 PW=$(grep -m1 '^LOAD_SUPABASE_DB_PASSWORD=' .env | cut -d= -f2- \
      | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")
 [ -n "$PW" ] || { echo "LOAD_SUPABASE_DB_PASSWORD not found in .env" >&2; exit 2; }
