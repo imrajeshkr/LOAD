@@ -1,5 +1,6 @@
 -- Every split must produce a week that trains push, pull AND legs muscles.
 -- Fails today for upper_lower (no pull) and full_body (no legs).
+savepoint split_coverage_test;   -- also a guard: errors loudly outside a transaction
 DO $$
 declare
   v_uid  uuid;
@@ -41,3 +42,4 @@ begin
 
   raise notice 'ALL SPLITS COVER PUSH/PULL/LEGS';
 end $$;
+rollback to savepoint split_coverage_test;

@@ -1,3 +1,4 @@
+savepoint backfill_test;   -- also a guard: errors loudly outside a transaction
 DO $$
 declare v_missing int;
 begin
@@ -12,3 +13,4 @@ begin
   end if;
   raise notice 'ALL CURRENT PROFILES HAVE INTAKE';
 end $$;
+rollback to savepoint backfill_test;

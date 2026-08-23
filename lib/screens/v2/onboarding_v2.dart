@@ -626,7 +626,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
     const options = [
       ('Under 6 months', 'beginner', 'Weight can climb almost every session.'),
       ('6 months to 2 years', 'intermediate', 'Weight climbs across the week, not every session.'),
-      ('over 2 years', 'advanced', 'Progress comes in blocks, with lighter weeks built in.'),
+      ('Over 2 years', 'advanced', 'Progress comes in blocks, with lighter weeks built in.'),
     ];
     return Column(
       children: [
@@ -646,7 +646,9 @@ class _OnboardingV2State extends State<OnboardingV2> {
     const options = [
       ('A commercial gym', 'commercial_gym', 'Full racks, machines and cables.'),
       ('A home gym', 'home_gym', 'Barbell, dumbbells and a bench — no machines.'),
-      ('No equipment', 'bodyweight_only', 'Bodyweight only, wherever you are.'),
+      // 'bodyweight_only' is intentionally omitted: the current catalog has no
+      // bodyweight leg exercises, so it would generate an empty Leg day.
+      // Restored when the catalog import lands.
     ];
     return Column(
       children: [
@@ -1615,26 +1617,52 @@ class _OnboardingV2State extends State<OnboardingV2> {
         value: _coachChoice
             ? "Your call, coach"
             : (_goals.isEmpty ? 'Not picked' : _goals.map((g) => g.label).join(' · ')),
-        step: 0,
+        step: _steps.indexOf('goal'),
         icon: Icons.flag_outlined,
         span: 2,
         warm: false
       ),
-      (label: 'Bodyweight', value: '${_disp(_bw)} ${_metric ? 'kg' : 'lb'}', step: 1, icon: Icons.monitor_weight_outlined, span: 1, warm: false),
+      (label: 'Bodyweight', value: '${_disp(_bw)} ${_metric ? 'kg' : 'lb'}', step: _steps.indexOf('body'), icon: Icons.monitor_weight_outlined, span: 1, warm: false),
       (
         label: 'Target',
         value: (_targetMode == 'none' || _targetMode == null)
             ? 'None'
             : '${_disp(_target)} ${_metric ? 'kg' : 'lb'}',
-        step: 1,
+        step: _steps.indexOf('body'),
         icon: Icons.flag_circle_outlined,
         span: 1,
         warm: false
       ),
-      (label: 'Week', value: '$_dayCount days', step: 2, icon: Icons.calendar_month_outlined, span: 1, warm: false),
-      (label: 'Bench start', value: _benched ? '${_n(_benchTotal)} kg' : 'Bar only', step: 3, icon: Icons.fitness_center, span: 1, warm: false),
-      (label: 'Split', value: _splitLabel(), step: 2, icon: Icons.view_week_outlined, span: 2, warm: false),
-      (label: 'Protein', value: '${(_bw * 1.8).round()} g a day', step: 1, icon: Icons.restaurant, span: 2, warm: false),
+      (label: 'Week', value: '$_dayCount days', step: _steps.indexOf('days'), icon: Icons.calendar_month_outlined, span: 1, warm: false),
+      (
+        label: 'Training age',
+        value: switch (_experience) {
+          'beginner' => 'Under 6 months',
+          'intermediate' => '6 months to 2 years',
+          'advanced' => 'Over 2 years',
+          _ => 'Not picked',
+        },
+        step: _steps.indexOf('experience'),
+        icon: Icons.timeline_outlined,
+        span: 1,
+        warm: false
+      ),
+      (
+        label: 'Where you train',
+        value: switch (_environment) {
+          'commercial_gym' => 'Commercial gym',
+          'home_gym' => 'Home gym',
+          'bodyweight_only' => 'No equipment',
+          _ => 'Not picked',
+        },
+        step: _steps.indexOf('place'),
+        icon: Icons.place_outlined,
+        span: 1,
+        warm: false
+      ),
+      (label: 'Bench start', value: _benched ? '${_n(_benchTotal)} kg' : 'Bar only', step: _steps.indexOf('bar'), icon: Icons.fitness_center, span: 1, warm: false),
+      (label: 'Split', value: _splitLabel(), step: _steps.indexOf('days'), icon: Icons.view_week_outlined, span: 2, warm: false),
+      (label: 'Protein', value: '${(_bw * 1.8).round()} g a day', step: _steps.indexOf('body'), icon: Icons.restaurant, span: 2, warm: false),
       (
         label: 'Working around',
         value: (_flags.isNotEmpty || _painCtrl.text.trim().isNotEmpty)
@@ -1643,7 +1671,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
                 _painCtrl.text.trim(),
               ].where((x) => x.isNotEmpty).join(' · ')
             : 'Nothing flagged',
-        step: 4,
+        step: _steps.indexOf('map'),
         icon: Icons.healing_outlined,
         span: 2,
         warm: _flags.isNotEmpty || _painCtrl.text.trim().isNotEmpty
