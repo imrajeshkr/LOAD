@@ -183,9 +183,21 @@ class _ProfileTabState extends State<ProfileTab> {
     try {
       await apply();
       await SupabaseService.instance.generateProgram();
+      final diff = await SupabaseService.instance.fetchProgramDiff();
       await _load();
       Haptics.success();
-      if (mounted) _toast('Your week has been rebuilt.');
+      if (!mounted) return true;
+      // "Your week has been rebuilt" tells the lifter nothing about what
+      // happened to the lifts they care about. Name them (§8.3).
+      if (diff != null && !diff.isEmpty) {
+        await showModalBottomSheet<void>(
+          context: context,
+          backgroundColor: Colors.transparent,
+          builder: (_) => _RebuildSummarySheet(diff: diff),
+        );
+      } else {
+        _toast('Your week has been rebuilt.');
+      }
       return true;
     } catch (e) {
       if (!mounted) return false;
@@ -2143,6 +2155,102 @@ class _SwapScopeSheet extends StatelessWidget {
                   color: filled ? AppColors.onAccent : AppColors.textPrimary)),
         ),
       ),
+    );
+  }
+}
+
+/// What the rebuild actually did. Kept comes first and is stated as a count
+/// rather than a list: the reassurance a lifter wants is "my main lifts
+/// survived", and thirteen names would bury the two that changed.
+class _RebuildSummarySheet extends StatelessWidget {
+  final ProgramDiffV2 diff;
+  const _RebuildSummarySheet({required this.diff});
+
+  @override
+  Widget build(BuildContext context) {
+    return _sheetShell(
+      context,
+      children: [
+        const Text('Your week has been rebuilt',
+            style: TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w700,
+                fontSize: 18,
+                color: AppColors.textPrimary)),
+        const SizedBox(height: 4),
+        Text(
+          diff.kept.isEmpty
+              ? 'Every set you have logged is kept.'
+              : '${diff.kept.length} of your lifts carried straight over. '
+                'Every set you have logged is kept.',
+          style: const TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontSize: 13,
+              height: 1.5,
+              color: AppColors.textSecondary),
+        ),
+        if (diff.added.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          _diffGroup('New', diff.added, AppColors.accent),
+        ],
+        if (diff.dropped.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          _diffGroup('No longer in the plan', diff.dropped, AppColors.textFaint),
+        ],
+        const SizedBox(height: 18),
+        Pressable(
+          haptic: PressFx.medium,
+          onTap: () => Navigator.of(context).pop(),
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: AppColors.accent, borderRadius: BorderRadius.circular(22)),
+            child: const Text('Got it',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: AppColors.onAccent)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _diffGroup(String label, List<String> names, Color dot) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label.toUpperCase(),
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w700,
+                fontSize: 10.5,
+                letterSpacing: 0.7,
+                color: AppColors.textFaint)),
+        const SizedBox(height: 7),
+        for (final n in names)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 5),
+            child: Row(children: [
+              Container(
+                width: 5,
+                height: 5,
+                margin: const EdgeInsets.only(right: 9),
+                decoration: BoxDecoration(color: dot, shape: BoxShape.circle),
+              ),
+              Expanded(
+                child: Text(n,
+                    style: const TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontSize: 13,
+                        color: AppColors.textPrimary)),
+              ),
+            ]),
+          ),
+      ],
     );
   }
 }

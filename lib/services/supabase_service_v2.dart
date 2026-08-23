@@ -902,6 +902,21 @@ extension SupabaseServiceV2 on SupabaseService {
   /// due. Cheap and idempotent — it returns null unless something actually
   /// happened. Called when the Train tab opens because a return from a layoff
   /// cannot be detected on session finish: by definition no session happened.
+  /// What the last rebuild changed. Null if there is nothing to compare
+  /// against — a first program has no predecessor.
+  Future<ProgramDiffV2?> fetchProgramDiff() async {
+    try {
+      final uid = currentUser?.id;
+      if (uid == null) return null;
+      final rows = await client.rpc('program_diff', params: {'p_user_id': uid});
+      final list = (rows as List).cast<Map<String, dynamic>>();
+      if (list.isEmpty) return null;
+      return ProgramDiffV2.fromJson(list.first);
+    } catch (_) {
+      return null;   // a missing summary must never fail the rebuild itself
+    }
+  }
+
   Future<String?> rollBlockIfDue() async {
     try {
       return await client.rpc('roll_block_on_open') as String?;

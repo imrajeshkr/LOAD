@@ -400,7 +400,14 @@ Implemented as a `ramp_factor` applied at `train_screen()` time, derived from da
 > question, and neither is a proposal: a block boundary is part of the
 > programme already agreed to, and a layoff is not a choice being made.
 >
-> **Still open:** the kept/added/dropped diff (§8.3 item 4).
+> **`v2_0044` closes the diff (§8.3 item 4), and §8 is now fully implemented.**
+> It is shown *after* the rebuild, not in the confirmation sheet: that sheet
+> runs before the new program exists, and producing a preview would mean
+> speculatively running the whole generator. After is also when the lifter
+> actually wants it — the question is "what did you just do to my plan".
+> It could not have been written before `v2_0042` either; without continuity a
+> rebuild reshuffled everything, so "kept" was near-meaningless and the diff
+> would have read as alarm rather than reassurance.
 
 A program today runs **forever**; only loads move. That's correct for a beginner (linear progression *is* the program) and wrong for everyone else — real training runs in blocks, then changes.
 
