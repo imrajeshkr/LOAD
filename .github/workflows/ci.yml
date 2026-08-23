@@ -15,6 +15,13 @@ jobs:
         with:
           channel: stable
           cache: true
+      # pubspec.yaml ships .env as a Flutter asset and .gitignore excludes it,
+      # so a clean checkout fails at "No file or variants found for asset: .env"
+      # before any test runs. Placeholders are enough — nothing here talks to
+      # Supabase; the SQL job below is what exercises the database.
+      - name: Provide placeholder .env
+        run: cp .env.example .env
+
       - run: flutter pub get
 
       # `flutter analyze` exits non-zero on infos too. The repo currently
@@ -54,8 +61,19 @@ jobs:
           LOAD_SUPABASE_DB_PASSWORD: ${{ secrets.LOAD_SUPABASE_DB_PASSWORD }}
         run: |
           if [ -z "$LOAD_SUPABASE_DB_PASSWORD" ]; then
-            echo "::warning::LOAD_SUPABASE_DB_PASSWORD not set — SQL suites skipped."
-            echo "Add it under Settings → Secrets → Actions to enable them."
+            # A green check that ran nothing is worse than no check, so say it
+            # loudly in the job summary rather than only in a log line.
+            {
+              echo "### SQL suites did not run"
+              echo
+              echo "\`LOAD_SUPABASE_DB_PASSWORD\` is not set, so all"
+              echo "\`supabase/tests/*_test.sql\` were **skipped** — this check"
+              echo "is green but verified nothing."
+              echo
+              echo "Add the secret under **Settings → Secrets and variables →"
+              echo "Actions** to enable them."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::SQL suites skipped — LOAD_SUPABASE_DB_PASSWORD not set"
             exit 0
           fi
           printf 'LOAD_SUPABASE_DB_PASSWORD=%s\n' "$LOAD_SUPABASE_DB_PASSWORD" > .env
