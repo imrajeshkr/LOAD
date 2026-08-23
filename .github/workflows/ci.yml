@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  flutter:
+    name: Analyze, test, interactivity guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+
+      # `flutter analyze` exits non-zero on infos too. The repo currently
+      # carries 4 pre-existing infos, so failing on those would make CI red
+      # from day one and teach everyone to ignore it. Errors and warnings do
+      # fail the build.
+      - name: flutter analyze (errors and warnings)
+        run: |
+          set -o pipefail
+          flutter analyze lib 2>&1 | tee analyze.txt || true
+          if grep -qE '^\s*(error|warning) •' analyze.txt; then
+            echo "::error::analyze reported errors or warnings"
+            grep -E '^\s*(error|warning) •' analyze.txt
+            exit 1
+          fi
+          echo "no errors or warnings ($(grep -c '^\s*info •' analyze.txt || echo 0) infos)"
+
+      - run: flutter test
+
+      # Enforces the CLAUDE.md rule that every screen tap goes through
+      # Pressable. Cheap, and the whole point is that it does not rely on
+      # anyone remembering.
+      - name: Interactivity guard
+        run: ./tool/check_interactivity.sh
+
+  database:
+    name: SQL suites
+    runs-on: ubuntu-latest
+    # Every suite runs inside a transaction that is always rolled back, so this
+    # is safe against the live database. It needs the pooler password, so it is
+    # skipped on forks and until the secret exists rather than failing red.
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run every suite
+        env:
+          LOAD_SUPABASE_DB_PASSWORD: ${{ secrets.LOAD_SUPABASE_DB_PASSWORD }}
+        run: |
+          if [ -z "$LOAD_SUPABASE_DB_PASSWORD" ]; then
+            echo "::warning::LOAD_SUPABASE_DB_PASSWORD not set — SQL suites skipped."
+            echo "Add it under Settings → Secrets → Actions to enable them."
+            exit 0
+          fi
+          printf 'LOAD_SUPABASE_DB_PASSWORD=%s\n' "$LOAD_SUPABASE_DB_PASSWORD" > .env
+          fail=0
+          for t in supabase/tests/*_test.sql; do
+            printf '%-44s ' "$(basename "$t")"
+            if out=$(./tool/db_test.sh "$t" 2>&1) && ! echo "$out" | grep -q 'ERROR'; then
+              echo pass
+            else
+              echo FAIL; echo "$out" | grep 'ERROR' | head -3; fail=1
+            fi
+          done
+          rm -f .env
+          exit $fail
