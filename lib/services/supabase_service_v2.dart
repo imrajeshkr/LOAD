@@ -898,6 +898,18 @@ extension SupabaseServiceV2 on SupabaseService {
   /// Alternatives for [exerciseId] that train the same muscle and clear the
   /// same equipment / training-age / injury filters the generator uses. Core
   /// first — the server orders by nothing, so we sort here.
+  /// Roll the block, or ease someone back in after time away, if either is
+  /// due. Cheap and idempotent — it returns null unless something actually
+  /// happened. Called when the Train tab opens because a return from a layoff
+  /// cannot be detected on session finish: by definition no session happened.
+  Future<String?> rollBlockIfDue() async {
+    try {
+      return await client.rpc('roll_block_on_open') as String?;
+    } catch (_) {
+      return null;   // never let housekeeping break the Train tab
+    }
+  }
+
   Future<List<SwapCandidateV2>> fetchSwapCandidates(String exerciseId) async {
     final rows = await client
         .rpc('swap_candidates', params: {'p_exercise_id': exerciseId});
