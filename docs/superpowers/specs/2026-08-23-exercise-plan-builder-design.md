@@ -348,6 +348,17 @@ On accept we **close the current `training_profiles` row (`valid_to = today`) an
 
 ### 8.3 Shape transitions — N days → M days, split → split
 
+> **Fully implemented.** 1 continuity `v2_0042` · 2 volume ramp `v2_0040` ·
+> 3 structural deload `v2_0049` · 4 kept/added/dropped diff `v2_0044` ·
+> 5 mid-week changes were already forward-only.
+>
+> Item 3 was the last one and was missed twice: `v2_0040` wired the ramp to
+> level changes and `v2_0043` to block rollovers, but nothing wired it to the
+> path a lifter triggers deliberately — changing split or training days in
+> Profile. Three days to six, the exact example this section uses for how
+> people get hurt, landed the whole increase in one week. The check now lives
+> inside `bootstrap_user_program`, so every caller is covered at once.
+
 Today `generateProgram()` archives the old program and builds a new one from scratch. Three things go wrong, and all three are invisible to the user.
 
 ```mermaid

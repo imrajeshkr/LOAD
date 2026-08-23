@@ -3,10 +3,14 @@
 savepoint intake;
 DO $$
 declare
-  v_uid uuid := 'c12540dc-958d-48a0-a83f-28fe4202f871';   -- the locked-out account
+  -- Chosen at run time. This used to hardcode the uuid of the account that
+  -- was locked out, which broke the moment that account was deleted and
+  -- recreated — a test should not depend on one row surviving.
+  v_uid uuid;
   v_payload jsonb;
   v_prog uuid; v_cur int; v_hist int; v_con int;
 begin
+  select id into v_uid from profiles order by created_at limit 1;
   perform set_config('request.jwt.claims', json_build_object('sub', v_uid)::text, true);
   v_payload := jsonb_build_object(
     'goal','build_muscle', 'goals', jsonb_build_array('build_muscle'),
