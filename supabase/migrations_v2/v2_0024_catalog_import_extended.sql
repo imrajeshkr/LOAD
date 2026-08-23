@@ -2,7 +2,6 @@
 -- Source: yuhonas/free-exercise-db (The Unlicense, public domain).
 -- All rows land as EXTENDED (is_core = false): browse/swap only,
 -- never auto-prescribed. Existing catalog rows are left untouched.
-begin;
 
 insert into exercises (slug, name, pattern, load_type, min_experience, mechanic,
                        force, is_core, source, description, default_rep_low, default_rep_high)
@@ -10964,4 +10963,3 @@ insert into exercise_equipment (exercise_id, equipment_id, is_required)
 select e.id, q.id, true from exercises e, equipment q
  where e.slug='zottman-preacher-curl' and e.owner_id is null and q.slug='dumbbell'
 on conflict do nothing;
-commit;
