@@ -34,6 +34,7 @@ class _ProfileTabState extends State<ProfileTab> {
   late List<int> _weekdays; // ISO 1..7
   late String _split; // split_preference
   String? _experience;
+  bool _intakeConfirmed = true;
   String? _environment;
   double? _target;
   late List<_WorkingFlag> _flags;
@@ -81,6 +82,7 @@ class _ProfileTabState extends State<ProfileTab> {
         _goals = [...data.goals];
         _weekdays = [...data.trainingWeekdays];
         _split = data.splitPreference;
+        _intakeConfirmed = data.intakeConfirmed;
         _experience = data.experience;
         _environment = data.environment;
         _slots = data.weekdaySlots;
@@ -566,6 +568,7 @@ class _ProfileTabState extends State<ProfileTab> {
             dirty: false,
             onTap: _openGoalSheet,
           ),
+          if (!_intakeConfirmed) _confirmIntakeBanner(),
           _PlanRow(
             icon: Icons.timeline_outlined,
             label: 'Training age',
@@ -1180,6 +1183,99 @@ class _ProfileTabState extends State<ProfileTab> {
       ),
     );
     if (!applied && mounted) setState(() => _goals = [...snapshot]);
+  }
+
+  /// Shown once to anyone whose training age and gym were filled in by a
+  /// default rather than by them (see migration v2_0032). Both values now pick
+  /// the exercises they are given and the progression scheme they are put on,
+  /// so a wrong guess is not cosmetic — but it is also not an error, so this
+  /// asks rather than warns.
+  Widget _confirmIntakeBanner() {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 10),
+      padding: const EdgeInsets.fromLTRB(14, 13, 14, 11),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceRaised,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.borderStrong),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Quick check on two things',
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.textPrimary)),
+          const SizedBox(height: 5),
+          Text(
+            'We filled in your training age and where you train so you could '
+            'get started. They decide which lifts you get and how fast the '
+            'weight goes up, so it is worth a look.',
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontSize: 11.5,
+                height: 1.45,
+                color: AppColors.textMuted),
+          ),
+          const SizedBox(height: 11),
+          Row(children: [
+            Pressable(
+              haptic: PressFx.medium,
+              onTap: _reviewIntake,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                    color: AppColors.accent, borderRadius: BorderRadius.circular(20)),
+                child: const Text('Review',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.onAccent)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Pressable(
+              haptic: PressFx.light,
+              onTap: () => _markIntakeConfirmed(),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: AppColors.border)),
+                child: const Text("They're right",
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary)),
+              ),
+            ),
+          ]),
+        ],
+      ),
+    );
+  }
+
+  /// Walk both questions, then record that the answers are the lifter's own.
+  Future<void> _reviewIntake() async {
+    await _openExperienceSheet();
+    if (!mounted) return;
+    await _openEnvironmentSheet();
+    if (!mounted) return;
+    await _markIntakeConfirmed();
+  }
+
+  /// Only ever called from a deliberate user action — never inferred.
+  Future<void> _markIntakeConfirmed() async {
+    setState(() => _intakeConfirmed = true);
+    try {
+      await SupabaseService.instance.updatePlanProfile({'intake_confirmed': true});
+    } catch (_) {
+      if (mounted) setState(() => _intakeConfirmed = false);
+    }
   }
 
   Future<void> _openExperienceSheet() async {

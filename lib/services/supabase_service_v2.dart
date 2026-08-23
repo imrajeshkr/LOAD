@@ -632,7 +632,7 @@ extension SupabaseServiceV2 on SupabaseService {
           .from('training_profiles')
           .select('goals, goal_is_coach_choice, target_weight_kg, '
               'target_direction, training_weekdays, split_preference, experience, '
-              'environment, bar_weight_kg, plate_sizes_kg')
+              'environment, bar_weight_kg, plate_sizes_kg, intake_confirmed')
           .eq('user_id', uid)
           .isFilter('valid_to', null)
           .maybeSingle(),
@@ -704,6 +704,7 @@ extension SupabaseServiceV2 on SupabaseService {
       splitPreference: tp['split_preference'] as String? ?? 'no_preference',
       experience: tp['experience'] as String?,
       environment: tp['environment'] as String?,
+      intakeConfirmed: (tp['intake_confirmed'] as bool?) ?? false,
       weekdaySlots: weekdaySlots,
       sessionsTotal: (gates['sessions_total'] as num?)?.toInt() ?? 0,
       weeksTraining: (gates['weeks_of_history'] as num?)?.toInt() ?? 0,
@@ -922,6 +923,9 @@ extension SupabaseServiceV2 on SupabaseService {
       'split_preference': d.splitPreference,
       'experience': d.experience,
       'environment': d.environment,
+      // The lifter answered these two steps, so the Profile prompt in
+      // v2_0032 must not ask them again.
+      'intake_confirmed': true,
       'bar_weight_kg': d.barWeightKg,
       'has_benched': d.hasBenched,
     });
