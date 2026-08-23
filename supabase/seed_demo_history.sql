@@ -45,6 +45,8 @@ declare
   v_holiday_a date := current_date - 96;
   v_holiday_b date := current_date - 82;
   v_started   timestamptz;
+  v_wd        smallint[] := array[1,3,5];   -- follows the profile, see promotion
+  v_trained   boolean;
 begin
   select id into v_uid from auth.users where email = 'rkumarmeena064@gmail.com';
   if v_uid is null then raise exception 'demo account not found'; end if;
@@ -115,10 +117,19 @@ begin
   v_day := v_from;
   while v_day <= v_today loop
     -- Mon / Wed / Fri, minus a holiday, minus the sessions real people skip.
-    if extract(isodow from v_day)::int in (1, 3, 5)
-       and not (v_day between v_holiday_a and v_holiday_b)
-       and (('x' || substr(md5(v_day::text), 1, 4))::bit(16)::int % 100) > 12
-    then
+    -- Read from v_wd rather than a literal: the promotion below moves this
+    -- lifter from Mon/Wed/Fri to Mon/Tue/Thu/Fri, and hardcoding (1,3,5) left
+    -- 77 sessions sitting on days the profile said were rest days. The app
+    -- then correctly reported "2 of 4 done · +1 extra · 2 missed" every week,
+    -- which looked like an app bug and was a seeding bug.
+    -- A scheduled day and a trained day are different things. Scheduling only
+    -- the days that were trained left skipped days with no program_day, so the
+    -- week strip showed them as REST rather than missed — the plan has to say
+    -- what you were meant to do before "missed" means anything.
+    v_trained := not (v_day between v_holiday_a and v_holiday_b)
+                 and (('x' || substr(md5(v_day::text), 1, 4))::bit(16)::int % 100) > 12;
+
+    if extract(isodow from v_day)::int = any (v_wd) then
       -- Halfway through, linear progression has finished its job. Promote,
       -- which is what the real detector would have proposed here.
       if not v_promoted and v_day > v_from + 100 then
@@ -139,6 +150,7 @@ begin
 
         v_prog := bootstrap_user_program(v_uid);
         update programs set starts_on = v_day where id = v_prog;
+        v_wd := array[1,2,4,5];   -- the new profile's training days
 
         -- Lifts already being trained keep their load; only lifts new to the
         -- rebuilt plan need a starting point. Gains slow after promotion.
@@ -159,16 +171,46 @@ begin
         v_promoted := true;
       end if;
 
-      select pd.id into v_pd
-        from program_days pd
-       where pd.program_id = v_prog
-       order by ((v_n % greatest(1, (select count(*) from program_days where program_id = v_prog)))
-                 = pd.ordinal - 1) desc, pd.ordinal
+      -- Take the day type from program_weekday_slots, which is how the app
+      -- actually decides what a given weekday is. Cycling by session count
+      -- instead produced Thursday = "Push day B" and Friday = "Push day A" —
+      -- two push days back to back, and a weekday whose session changed week
+      -- to week, which never happens in the real scheduler.
+      select s.program_day_id into v_pd
+        from program_weekday_slots s
+       where s.user_id = v_uid
+         and s.weekday = extract(isodow from v_day)::smallint
        limit 1;
+
+      -- The promotion above may have just moved this lifter off the weekday we
+      -- are standing on (Mon/Wed/Fri becomes Mon/Tue/Thu/Fri, so a Wednesday
+      -- stops being a training day mid-iteration). Skip that one day rather
+      -- than borrow another weekday's session, which would make one weekday
+      -- carry two session types.
+      if v_pd is null then
+        v_day := v_day + 1;
+        continue;
+      end if;
 
       -- performed_on is stamped from started_at by a trigger, so the timestamp
       -- is what actually dates the session.
       v_started := (v_day + time '18:30') at time zone 'Asia/Kolkata';
+      -- bootstrap only materialises the schedule FORWARD from the day it runs,
+      -- so history had no scheduled_workouts at all and every past day in the
+      -- week strip fell back to the "REST" label. A real account accumulates
+      -- these as the weeks pass; the seed has to lay them down itself.
+      insert into scheduled_workouts (user_id, program_id, program_day_id,
+                                      scheduled_for, status)
+      values (v_uid, v_prog, v_pd, v_day,
+              (case when v_trained then 'completed' else 'missed' end)::schedule_status)
+      on conflict (user_id, scheduled_for, program_day_id) do nothing;
+
+      -- Scheduled but not done: a genuine missed session.
+      if not v_trained then
+        v_day := v_day + 1;
+        continue;
+      end if;
+
       insert into workout_sessions (user_id, title, status, started_at, completed_at)
       values (v_uid,
               coalesce((select label from program_days where id = v_pd), 'Session'),
