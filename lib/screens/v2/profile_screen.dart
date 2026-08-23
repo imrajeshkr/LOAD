@@ -1226,9 +1226,7 @@ class _ProfileTabState extends State<ProfileTab> {
     const options = [
       ('Commercial gym', 'commercial_gym'),
       ('Home gym', 'home_gym'),
-      // 'bodyweight_only' is intentionally omitted: the current catalog has no
-      // bodyweight leg exercises, so it would generate an empty Leg day.
-      // Restored when the catalog import lands.
+      ('No equipment', 'bodyweight_only'),
     ];
     final snapshot = _environment;
     var applied = false;

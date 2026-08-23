@@ -646,9 +646,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
     const options = [
       ('A commercial gym', 'commercial_gym', 'Full racks, machines and cables.'),
       ('A home gym', 'home_gym', 'Barbell, dumbbells and a bench — no machines.'),
-      // 'bodyweight_only' is intentionally omitted: the current catalog has no
-      // bodyweight leg exercises, so it would generate an empty Leg day.
-      // Restored when the catalog import lands.
+      ('No equipment', 'bodyweight_only', 'Bodyweight only, wherever you are.'),
     ];
     return Column(
       children: [
