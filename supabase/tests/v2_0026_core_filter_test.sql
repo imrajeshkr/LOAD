@@ -13,11 +13,18 @@ begin
   select count(*) into v_tot from program_days pd
     join program_day_exercises pde on pde.program_day_id=pd.id where pd.program_id=v_prog;
 
-  -- nothing Extended may be prescribed
+  -- Nothing Extended may be prescribed BY THE GENERATOR. A lift the lifter
+  -- swapped in themselves is a different matter: spec §9 offers Extended
+  -- candidates deliberately, and since v2_0033 gave the whole catalog joint
+  -- data they are vetted against injuries like anything else. So exclude
+  -- exercises that arrived through a standing swap — this test predates the
+  -- swap feature and used to fail the moment anyone used it.
   select count(*) into v_ext from program_days pd
     join program_day_exercises pde on pde.program_day_id=pd.id
     join exercises e on e.id=pde.exercise_id
-   where pd.program_id=v_prog and not e.is_core;
+   where pd.program_id=v_prog and not e.is_core
+     and not exists (select 1 from exercise_swaps s
+                      where s.user_id=v_uid and s.to_exercise_id=e.id);
 
   -- nothing above the lifter's training age
   select count(*) into v_above from program_days pd
