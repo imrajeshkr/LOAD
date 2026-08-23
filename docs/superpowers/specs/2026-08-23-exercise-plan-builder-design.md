@@ -381,6 +381,27 @@ Implemented as a `ramp_factor` applied at `train_screen()` time, derived from da
 
 ### 8.4 Program lifecycle — the deeper gap
 
+> **Implemented by `v2_0042`/`v2_0043` (applied).** `programs.ends_on` is now
+> set — 6 weeks intermediate, 4 weeks advanced, none for a beginner, since for
+> them linear progression *is* the block and its stall is the boundary §8.1
+> promotes on. When the date arrives the plan rebuilds, opens on a lighter
+> week, and says so.
+>
+> §8.3's continuity and §8.4's "keep main lifts, vary 1-2 accessories" turned
+> out to be **one rule, not two**: recently-trained compounds sort first (keep
+> the lift you are mid-progress on), recently-trained isolation sorts last
+> (rotate the accessory). A single ORDER BY term does both.
+>
+> §13.8's Returning state ships here too, because it is the same shape of
+> problem — rebuild, open lighter, announce — differing only in wording. A
+> declared pause gets "welcome back, picking up where you left off"; three
+> weeks of silence gets the more careful version that invites the lifter to
+> put the weight up if they have been training elsewhere. Neither asks a
+> question, and neither is a proposal: a block boundary is part of the
+> programme already agreed to, and a layoff is not a choice being made.
+>
+> **Still open:** the kept/added/dropped diff (§8.3 item 4).
+
 A program today runs **forever**; only loads move. That's correct for a beginner (linear progression *is* the program) and wrong for everyone else — real training runs in blocks, then changes.
 
 `programs.ends_on` exists and is unused. Proposal:

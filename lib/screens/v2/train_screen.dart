@@ -49,7 +49,21 @@ class _TrainTabState extends State<TrainTab> {
   @override
   void initState() {
     super.initState();
-    _load();
+    // Sequential on purpose: a rollover rewrites the plan, so the fetch has to
+    // come after it or the tab shows the block that just ended.
+    _checkRollover().then((_) => _load());
+  }
+
+  /// Block rollovers and layoff returns are checked here rather than on the
+  /// server alone: coming back after weeks away produces no session finish to
+  /// hang a trigger on. Runs before the fetch so the reload sees the new plan.
+  Future<void> _checkRollover() async {
+    final rolled = await SupabaseService.instance.rollBlockIfDue();
+    if (rolled != null && mounted) {
+      _snack(rolled == 'block_end'
+          ? 'New block ready — check the trainer tab.'
+          : 'Welcome back — your plan is ready.');
+    }
   }
 
   Future<void> _load() async {
