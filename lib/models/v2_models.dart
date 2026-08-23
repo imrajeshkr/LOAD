@@ -22,6 +22,14 @@ class PlanExerciseV2 {
   /// lift — drives the plan chip's progress fill when a session is resumed.
   final int doneSets;
 
+  /// Why today's suggested weight is what it is, in the user's language.
+  /// Null when nothing interesting happened (weight simply held).
+  final String? coachNote;
+
+  /// The suggested weight is a step back after a stall. Never labelled as
+  /// such to the user — [coachNote] carries the reason instead.
+  final bool isDeload;
+
   const PlanExerciseV2({
     required this.exerciseId,
     required this.name,
@@ -39,6 +47,8 @@ class PlanExerciseV2 {
     required this.cues,
     required this.joints,
     this.doneSets = 0,
+    this.coachNote,
+    this.isDeload = false,
   });
 
   bool get isBodyweight => loadType == 'bodyweight_reps';
@@ -90,6 +100,8 @@ class PlanExerciseV2 {
       cues: ((j['cues'] as List?) ?? const []).cast<String>(),
       joints: ((j['joints'] as List?) ?? const []).cast<String>(),
       doneSets: (j['done_sets'] as num?)?.toInt() ?? 0,
+      coachNote: j['coach_note'] as String?,
+      isDeload: (j['is_deload'] as bool?) ?? false,
     );
   }
 }

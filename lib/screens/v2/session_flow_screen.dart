@@ -66,6 +66,10 @@ class _LiftScreen extends StatelessWidget {
                   const SizedBox(height: 9),
                   _Cues(cues: e.cues),
                 ],
+                if (e.coachNote != null) ...[
+                  const SizedBox(height: 12),
+                  _CoachNote(e: e),
+                ],
                 const SizedBox(height: 16),
                 _SetTable(c: c),
                 if (c.askFeel) ...[const SizedBox(height: 9), _FeelCard(c: c)],
@@ -576,6 +580,38 @@ class _Cues extends StatelessWidget {
                 ],
               ),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Explains why today's prefilled weight is what it is — an increase, or a
+/// step back after a stall. The copy comes from the server so the reasoning
+/// lives with the rule that produced it.
+///
+/// A step back gets no warning colour and no "deload" label: the point is that
+/// it reads as coaching, not as the app marking you down.
+class _CoachNote extends StatelessWidget {
+  final PlanExerciseV2 e;
+  const _CoachNote({required this.e});
+  @override
+  Widget build(BuildContext context) {
+    return V2Card(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(e.isDeload ? Icons.trending_down_rounded : Icons.trending_up_rounded,
+              size: 15, color: AppColors.accent),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(e.coachNote!,
+                style: const TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontSize: 11.5,
+                    height: 1.5,
+                    color: AppColors.textSecondary)),
+          ),
         ],
       ),
     );

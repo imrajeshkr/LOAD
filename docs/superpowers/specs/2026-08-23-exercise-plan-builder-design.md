@@ -239,6 +239,22 @@ Bench calibration (already built) overrides for bench. All loads snap to loadabl
 
 ## 7. Progression by experience
 
+> **Implemented by `v2_0030` (applied).** `train_screen()` now branches on
+> experience: beginners progress linearly, intermediates keep double
+> progression, and advanced lifters get the reactive deload that did not exist
+> before. The deload needs no schema and no dismissal state — it is derived from
+> the last three sessions and delivered as the prefilled weight, so §13.5's
+> "always skippable" is satisfied by the user typing a different number, and it
+> self-clears once a lighter session is logged. Copy is asserted free of the
+> word "deload" and of any tier name (§13.7) by
+> `supabase/tests/v2_0030_progression_test.sql`.
+>
+> `v2_0031` closes a related hole found while testing: `experience` and
+> `environment` were landing NULL again on rows written by app builds released
+> before Plan 01, which omit those keys entirely. The columns now carry
+> DEFAULTs, so the guarantee no longer depends on which client version a user
+> happens to be running.
+
 The runtime half — `train_screen()` already does double progression, but with one hardcoded rule for everyone. Parameterize it:
 
 | Experience | Scheme | Increment | Stall handling |
