@@ -476,6 +476,17 @@ To answer the question directly: they're **photographs of a person performing th
 
 Result: 100% guide coverage, best asset per exercise, nothing good thrown away.
 
+> **Rights caveat — unresolved, blocking the mirror.** §13.3 judged these
+> images on quality alone. The dataset repo carries The Unlicense, which covers
+> the *compilation*; it does not clearly dedicate the underlying photographs,
+> which are bodybuilding.com exercise-database shoots — and some frames carry a
+> visible bodybuilding.com logo on the model's shirt (Reverse Flyes is one).
+> The mirror is therefore **on hold**: the ten newly-promoted Core exercises
+> keep the placeholder icon rather than ship third-party branded photos into a
+> released app. Files are staged and the upload is minutes' work once this is
+> settled. Resolving it means one of: confirming the licence covers the images,
+> commissioning illustrations, or generating them.
+
 **Mirror, don't hot-link.** 619 × 2 × ~73KB ≈ **90MB**, trivial against the progress-photo bucket, and converting to `.webp` (as our existing guides already are) will cut it substantially. Hot-linking makes our exercise guides break if someone renames a folder in a repo we don't control.
 
 ### 13.4 `general_health` is a signal, not a goal
@@ -558,5 +569,16 @@ On a multi-pattern day more muscles compete than there are slots — an Upper da
 | `push_pull_legs` · any | 4 vs 4 | none — nothing is ever discarded |
 
 This was left in place deliberately. It is a strict improvement on what it replaced (`upper_lower` previously had *no* pull work at all), and the two cheap fixes are both wrong: reordering would change the *ordinal*, which drives `sets_target` and `rest_seconds`, silently rewriting every existing PPL user's prescription; and raising the slot cap to 8 contradicts §6's 4–6 session-length cap.
+
+**CLOSED by `v2_0029` (applied).** Selection is now driven by a weekly
+per-muscle set budget. The acceptance test
+`supabase/tests/v2_0029_volume_coverage_test.sql` asserts that Side Delt, Rear
+Delt, Calves **and Abs** receive weekly volume under all three splits, and it
+passes. Two further defects surfaced while closing this one: no split included
+the `core` pattern, so Abs were never trained at all; and `upper_lower` emitted
+one `program_day` per day-*type*, so a 4-day user got the same two sessions
+twice. Both are fixed in the same migration.
+
+Original reasoning, kept for the record:
 
 **Plan 03 closes it by construction.** Once selection is driven by a weekly per-muscle set budget (§6.1–6.3) rather than a per-session slot race, a muscle earns its sets across the week instead of competing for a seat in one session. Treat "side delt, rear delt and calves receive their weekly volume target under every split" as an acceptance criterion for Plan 03.
