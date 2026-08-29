@@ -130,22 +130,62 @@ class _Header extends StatelessWidget {
 
 /// A live map of the session, in the lifter's chosen order — tap any lift to
 /// go there, no lift is "next". Half-finished lifts keep their sets.
-class _Rail extends StatelessWidget {
+class _Rail extends StatefulWidget {
   final SessionController c;
   const _Rail({required this.c});
+  @override
+  State<_Rail> createState() => _RailState();
+}
+
+class _RailState extends State<_Rail> {
+  final _scroll = ScrollController();
+  final _keys = <int, GlobalKey>{};
+  int? _lastIdx;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  /// Bring the active lift into view whenever it changes, so progressing
+  /// through the session scrolls the ribbon on its own.
+  void _followActive() {
+    if (_lastIdx == widget.c.idx) return;
+    _lastIdx = widget.c.idx;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final key = _keys[widget.c.idx];
+      final ctx = key?.currentContext;
+      if (ctx == null) return;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+        alignment: 0.5,
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final order = c.order;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-      child: Row(
-        children: [
-          for (var k = 0; k < order.length; k++) ...[
-            Expanded(child: _RailItem(c: c, exIdx: order[k])),
-            if (k != order.length - 1) const SizedBox(width: 4),
-          ],
-        ],
+    _followActive();
+    final order = widget.c.order;
+    return SizedBox(
+      height: 34,
+      child: ListView.separated(
+        controller: _scroll,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+        itemCount: order.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 10),
+        itemBuilder: (_, k) {
+          final exIdx = order[k];
+          final key = _keys.putIfAbsent(exIdx, GlobalKey.new);
+          return KeyedSubtree(
+            key: key,
+            child: _RailItem(c: widget.c, exIdx: exIdx),
+          );
+        },
       ),
     );
   }
@@ -185,64 +225,67 @@ class _RailItem extends StatelessWidget {
           c.goTo(exIdx);
         }
       },
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              if (state == LiftState.deferred || skipped)
-                Expanded(
-                  child: Container(
-                    height: 3,
-                    decoration: BoxDecoration(
-                      color: skipped ? AppColors.borderFaint : AppColors.borderStrong,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                )
-              else
-                for (var p = 0; p < e.setsTarget; p++)
+      child: SizedBox(
+        width: 108,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                if (state == LiftState.deferred || skipped)
                   Expanded(
                     child: Container(
                       height: 3,
-                      margin: EdgeInsets.only(right: p == e.setsTarget - 1 ? 0 : 2),
                       decoration: BoxDecoration(
-                        color: p < logged ? barDone : AppColors.border,
+                        color: skipped ? AppColors.borderFaint : AppColors.borderStrong,
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),
+                  )
+                else
+                  for (var p = 0; p < e.setsTarget; p++)
+                    Expanded(
+                      child: Container(
+                        height: 3,
+                        margin: EdgeInsets.only(right: p == e.setsTarget - 1 ? 0 : 2),
+                        decoration: BoxDecoration(
+                          color: p < logged ? barDone : AppColors.border,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                    ),
+              ],
+            ),
+            const SizedBox(height: 5),
+            Row(
+              children: [
+                if (state == LiftState.deferred)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 3),
+                    child: Icon(Icons.schedule_rounded, size: 8, color: AppColors.textMuted),
                   ),
-            ],
-          ),
-          const SizedBox(height: 5),
-          Row(
-            children: [
-              if (state == LiftState.deferred)
-                const Padding(
-                  padding: EdgeInsets.only(right: 3),
-                  child: Icon(Icons.schedule_rounded, size: 8, color: AppColors.textMuted),
+                if (skipped)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 3),
+                    child: Icon(Icons.block_rounded, size: 8, color: AppColors.textDim),
+                  ),
+                Flexible(
+                  child: Text(e.name.toUpperCase(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                          fontSize: 8.5,
+                          letterSpacing: 0.4,
+                          decoration: skipped ? TextDecoration.lineThrough : null,
+                          decorationColor: AppColors.textDim,
+                          color: nameColor)),
                 ),
-              if (skipped)
-                const Padding(
-                  padding: EdgeInsets.only(right: 3),
-                  child: Icon(Icons.block_rounded, size: 8, color: AppColors.textDim),
-                ),
-              Flexible(
-                child: Text(e.name.toUpperCase(),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
-                        fontSize: 8.5,
-                        letterSpacing: 0.4,
-                        decoration: skipped ? TextDecoration.lineThrough : null,
-                        decorationColor: AppColors.textDim,
-                        color: nameColor)),
-              ),
-            ],
-          ),
-        ],
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
