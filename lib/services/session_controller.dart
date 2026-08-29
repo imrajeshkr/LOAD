@@ -313,11 +313,9 @@ class SessionController extends ChangeNotifier {
   /// set, or never (Profile's "Ask how the set felt").
   Future<void> logSet() async {
     final e = ex;
-    final st = staged();
+    final st = planned.at(_sets[idx].length);
     _sets[idx].add(SetRow(e.isBodyweight ? null : st.$1, st.$2));
     _entry[idx] = EntryModeV2.live;
-    _stagedKg = null;
-    _stagedReps = null;
     cuesOpen = false;
 
     final n = _sets[idx].length;
@@ -333,12 +331,37 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Log row [n]. Only the next un-logged row is loggable — sets happen in
+  /// order, and letting row 3 be logged before row 1 would record a session
+  /// that never happened.
+  Future<void> logRow(int n) async {
+    if (n != _sets[idx].length) return;
+    await logSet();
+  }
+
+  /// Un-log row [n] and everything after it. The log circle is a toggle
+  /// because removing the start gate means a mis-tap writes a set.
+  Future<void> unlogFrom(int n) async {
+    final done = _sets[idx];
+    if (n < 0 || n >= done.length) return;
+    done.removeRange(n, done.length);
+    _stopRest();
+    askFeel = false;
+    Haptics.tap();
+    await _persist();
+    notifyListeners();
+  }
+
   void setEffort(EffortV2 v) {
     _effort[idx] = v;
     askFeel = false;
-    // "easy" bumps next set's weight one step.
+    // "easy" bumps next set's weight one step. Rows now carry their own
+    // planned values (the single staging slot is retired), so the bump has
+    // to land on the next planned row directly, guarded in case every row is
+    // already logged.
     if (v == EffortV2.easy && !ex.isBodyweight) {
-      _stagedKg = staged().$1 + ex.step;
+      final n = _sets[idx].length;
+      if (n < planned.length) planned.adjust(n, dKg: ex.step);
     }
     // "all" closes the lift here: shrink target to what was done.
     if (v == EffortV2.all) {
@@ -351,11 +374,14 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// "Done all sets" — fill remaining rows with the staged values.
+  /// "Done all sets" — fill remaining rows with each row's own planned
+  /// values, not one shared staged value: the lifter may have edited
+  /// individual rows on screen, and filling from a single number would log
+  /// numbers that were never displayed.
   Future<void> fillRemaining() async {
     final e = ex;
-    final st = staged();
     while (_sets[idx].length < target(idx)) {
+      final st = planned.at(_sets[idx].length);
       _sets[idx].add(SetRow(e.isBodyweight ? null : st.$1, st.$2));
     }
     _entry[idx] = EntryModeV2.bulk;
@@ -392,6 +418,10 @@ class SessionController extends ChangeNotifier {
   Future<void> setSituation(String? s) async {
     situation = s;
     _stagedKg = null;
+    // planKg() scales weight by situation, so the rows already seeded for the
+    // current exercise are stale numbers — drop them so the next read
+    // re-seeds at the new scaling instead of showing pre-situation weights.
+    _planned[idx] = null;
     await _svc.setSituation(sessionId, s);
     notifyListeners();
   }

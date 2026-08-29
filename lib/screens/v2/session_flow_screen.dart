@@ -628,7 +628,9 @@ class _SetTable extends StatelessWidget {
     final total = target0(c);
     for (var n = 0; n < total; n++) {
       final done = n < c.sets.length;
-      final isNext = n == c.sets.length && c.entry == EntryModeV2.live;
+      // No `entry` check: that was true only after "Start this lift", which no
+      // longer exists. The next row is simply the first un-logged one.
+      final isNext = n == c.sets.length;
       rows.add(_SetChip(c: c, n: n, done: done, isNext: isNext, e: e));
     }
     return Column(
@@ -699,7 +701,9 @@ class _SetChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final editable = done || isNext;
+    // Every row is adjustable, logged or not. The start gate is gone, so there
+    // is no such thing as a row you are not allowed to touch yet — the value
+    // read and stepper callbacks below always apply.
     final Color bg = done
         ? const Color(0xFF14170D)
         : isNext
@@ -711,13 +715,13 @@ class _SetChip extends StatelessWidget {
             ? AppColors.borderStrong
             : AppColors.borderFaint;
 
-    double kg;
-    int reps;
+    final double kg;
+    final int reps;
     if (done) {
       kg = c.sets[n].kg ?? 0;
       reps = c.sets[n].reps;
     } else {
-      final s = c.staged();
+      final s = c.planned.at(n);
       kg = s.$1;
       reps = s.$2;
     }
@@ -731,55 +735,70 @@ class _SetChip extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Container(
-            width: 22,
-            height: 22,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: done ? AppColors.accent : AppColors.surface,
-              shape: BoxShape.circle,
-            ),
-            child: done
-                ? const Icon(Icons.check_rounded, size: 14, color: AppColors.onAccent)
-                : Text('${n + 1}',
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 10,
-                        color: isNext ? AppColors.accent : AppColors.textFaint)),
-          ),
-          const SizedBox(width: 9),
-          if (editable) ...[
-            if (!e.isBodyweight) ...[
-              Expanded(
-                child: _Stepper(
-                  value: _n(kg),
-                  onDown: () => done ? c.adjustSet(n, dKg: -e.step) : c.adjustStagedWeight(-e.step),
-                  onUp: () => done ? c.adjustSet(n, dKg: e.step) : c.adjustStagedWeight(e.step),
+          Pressable(
+            haptic: PressFx.none, // logRow/unlogFrom buzz themselves
+            onTap: done
+                ? () => c.unlogFrom(n)
+                : (n == c.sets.length ? () => c.logRow(n) : null),
+            child: Container(
+              width: 26,
+              height: 26,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: done ? AppColors.accent : AppColors.surface,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: done
+                      ? AppColors.accent
+                      : (n == c.sets.length ? AppColors.accent : AppColors.borderFaint),
+                  width: 1.5,
                 ),
               ),
-              Container(width: 1, height: 18, color: border),
-            ] else
-              const Expanded(
-                  child: Padding(
-                padding: EdgeInsets.only(left: 2),
-                child: Text('Bodyweight',
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textFaint)),
-              )),
+              child: done
+                  ? const Icon(Icons.check_rounded, size: 15, color: AppColors.onAccent)
+                  : Text('${n + 1}',
+                      style: TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 11,
+                          color: n == c.sets.length
+                              ? AppColors.accent
+                              : AppColors.textFaint)),
+            ),
+          ),
+          const SizedBox(width: 9),
+          if (!e.isBodyweight) ...[
             Expanded(
               child: _Stepper(
-                value: '$reps',
-                onDown: () => done ? c.adjustSet(n, dReps: -1) : c.adjustStagedReps(-1),
-                onUp: () => done ? c.adjustSet(n, dReps: 1) : c.adjustStagedReps(1),
+                value: _n(kg),
+                onDown: () => done
+                    ? c.adjustSet(n, dKg: -e.step)
+                    : c.adjustPlanned(n, dKg: -e.step),
+                onUp: () => done
+                    ? c.adjustSet(n, dKg: e.step)
+                    : c.adjustPlanned(n, dKg: e.step),
               ),
             ),
+            Container(width: 1, height: 18, color: border),
           ] else
-            Expanded(
-              child: Text('Set ${n + 1}',
-                  style: const TextStyle(
-                      fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textDim)),
+            const Expanded(
+                child: Padding(
+              padding: EdgeInsets.only(left: 2),
+              child: Text('Bodyweight',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textFaint)),
+            )),
+          Expanded(
+            child: _Stepper(
+              value: '$reps',
+              onDown: () => done
+                  ? c.adjustSet(n, dReps: -1)
+                  : c.adjustPlanned(n, dReps: -1),
+              onUp: () => done
+                  ? c.adjustSet(n, dReps: 1)
+                  : c.adjustPlanned(n, dReps: 1),
             ),
+          ),
           Pressable(
             onTap: () => c.removeSet(n),
             child: const SizedBox(
