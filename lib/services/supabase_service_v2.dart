@@ -956,6 +956,130 @@ extension SupabaseServiceV2 on SupabaseService {
   Future<void> unswapExercise(String fromId) =>
       client.rpc('unswap_exercise', params: {'p_from_exercise_id': fromId});
 
+  // ── Add / create an exercise (Plan B tasks 5-7) ──────────────────────────
+
+  /// The whole reachable catalogue plus the caller's own private exercises,
+  /// for the "+ Add exercise" picker. Unlike [fetchSwapCandidates] this needs
+  /// no source exercise — it's a search, not a substitution.
+  Future<List<BrowseExerciseV2>> browseExercises({String? query}) async {
+    final rows = await client.rpc('browse_exercises', params: {
+      'p_query': (query == null || query.trim().isEmpty) ? null : query.trim(),
+    });
+    final list = (rows as List)
+        .cast<Map<String, dynamic>>()
+        .map(BrowseExerciseV2.fromJson)
+        .toList();
+    list.sort((a, b) {
+      if (a.isCore != b.isCore) return a.isCore ? -1 : 1;
+      return a.name.compareTo(b.name);
+    });
+    return list;
+  }
+
+  /// Append an exercise to a program day — the generator's 4-6 lift cap is a
+  /// rule about what we prescribe, not a limit on what a lifter may add.
+  /// No-op if it's already on the day.
+  Future<void> addDayExercise(String programDayId, String exerciseId) =>
+      client.rpc('add_day_exercise', params: {
+        'p_program_day_id': programDayId,
+        'p_exercise_id': exerciseId,
+      });
+
+  /// A private exercise. owner_id set + is_core false means the generator
+  /// ignores it — it already filters `owner_id is null and is_core`.
+  Future<String?> createExercise({
+    required String name,
+    required String pattern, // push | pull | legs | core
+    String? muscleId, // optional
+    String? equipmentId, // optional
+    bool bodyweight = false,
+  }) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final slug = '${name.toLowerCase().replaceAll(RegExp(r"[^a-z0-9]+"), "-")}'
+        '-${DateTime.now().millisecondsSinceEpoch.toRadixString(36)}';
+    final row = await client.from('exercises').insert({
+      'slug': slug,
+      'name': name.trim(),
+      'pattern': pattern,
+      'load_type': bodyweight ? 'bodyweight_reps' : 'weight_reps',
+      'owner_id': uid,
+      'is_core': false,
+      'min_experience': 'beginner',
+      'source': 'user',
+    }).select('id').single();
+    final id = row['id'] as String;
+    if (muscleId != null) {
+      await client.from('exercise_muscles').insert(
+          {'exercise_id': id, 'muscle_id': muscleId, 'role': 'primary', 'contribution': 1.0});
+    }
+    if (equipmentId != null) {
+      await client.from('exercise_equipment').insert(
+          {'exercise_id': id, 'equipment_id': equipmentId, 'is_required': true});
+    }
+    return id;
+  }
+
+  /// Every muscle, for the create-exercise sheet's optional muscle picker.
+  Future<List<(String, String)>> fetchMuscleOptions() async {
+    final rows =
+        await client.from('muscles').select('id, name').order('name');
+    return (rows as List)
+        .map((r) => ((r as Map)['id'] as String, r['name'] as String))
+        .toList();
+  }
+
+  /// Every piece of equipment, for the create-exercise sheet's optional
+  /// equipment picker.
+  Future<List<(String, String)>> fetchEquipmentOptions() async {
+    final rows =
+        await client.from('equipment').select('id, name').order('name');
+    return (rows as List)
+        .map((r) => ((r as Map)['id'] as String, r['name'] as String))
+        .toList();
+  }
+
+  /// Whether the caller owns exercise [exerciseId] (a custom exercise, not a
+  /// catalogue row). Used to decide whether "Add a photo" can be offered for
+  /// a lift with no illustration — a catalogue row can never be written to,
+  /// so offering an action that will fail is worse than offering none.
+  Future<bool> ownsExercise(String exerciseId) async {
+    final uid = currentUser?.id;
+    if (uid == null) return false;
+    final row = await client
+        .from('exercises')
+        .select('owner_id')
+        .eq('id', exerciseId)
+        .maybeSingle();
+    return row != null && row['owner_id'] == uid;
+  }
+
+  /// Add a photo to an exercise the caller owns — fills the catalogue's
+  /// illustration gap. Same shape as [uploadAvatar]: storage write, then a
+  /// column update, returning the stored object path (what `demoUrl()`
+  /// expects on `demo_path`, not a full URL). Optional throughout: a failed
+  /// upload here must never block anything the caller is doing, so this
+  /// simply throws and lets the caller decide how to no-op.
+  Future<String?> uploadExerciseDemo({
+    required String exerciseId,
+    required Uint8List bytes,
+    String ext = 'jpg',
+  }) async {
+    final uid = currentUser?.id;
+    if (uid == null) return null;
+    final path = 'user/$uid/$exerciseId-${DateTime.now().millisecondsSinceEpoch}.$ext';
+    await client.storage.from('exercise-media').uploadBinary(
+          path,
+          bytes,
+          fileOptions: FileOptions(
+            contentType: ext == 'png' ? 'image/png' : 'image/jpeg',
+            upsert: true,
+          ),
+        );
+    await client.from('exercises').update({'demo_path': path}).eq('id', exerciseId);
+    return path;
+  }
+
   Future<List<JointV2>> fetchJoints() async {
     final rows = await client
         .from('joints')

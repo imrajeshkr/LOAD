@@ -385,6 +385,15 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// A photo was just added to the lift at [i] (Task 7 — "Add a photo" on a
+  /// lift with no illustration). Patches the in-memory plan so the guide
+  /// re-renders immediately, without a full reload.
+  void setDemoPath(int i, String path) {
+    if (i < 0 || i >= exercises.length) return;
+    exercises[i] = exercises[i].copyWith(demoPath: path);
+    notifyListeners();
+  }
+
   void setEffort(EffortV2 v) {
     _effort[idx] = v;
     askFeel = false;

@@ -12,6 +12,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/v2_widgets.dart';
 import 'session_flow_screen.dart';
 import 'swap_sheet.dart';
+import 'add_exercise_sheet.dart';
 
 /// The calendar day the user last left the Train tab on. The post-session
 /// "next time these go up" card shows right after finishing and stays until
@@ -452,13 +453,27 @@ class _TrainTabState extends State<TrainTab> {
     }
   }
 
+  /// "+ Add exercise" at the end of the day's lift list — beyond what the
+  /// generator prescribed. Needs today's program day, which only the week
+  /// row carries; a rest day (no row) never shows this entry point.
+  Future<void> _openAddExercise() async {
+    final dayId = _plan?.todayProgramDayId;
+    if (dayId == null) return;
+    final added = await showAddExerciseSheet(context, dayId);
+    if (added && mounted) _load();
+  }
+
   // ── BEFORE: training day ──────────────────────────────────────────────────
   List<Widget> _beforeState(TrainScreenV2 plan) => [
         if (_note != null) ...[
           _MorningNoteCard(note: _note!),
           const SizedBox(height: 16),
         ],
-        _PlanList(plan: plan, onSwap: _openSwap),
+        _PlanList(
+          plan: plan,
+          onSwap: _openSwap,
+          onAdd: plan.todayProgramDayId == null ? null : _openAddExercise,
+        ),
         if (_fuel != null) ...[
           const SizedBox(height: 16),
           _BodyFuelCard(fuel: _fuel!, onQuickAdd: _logProtein),
@@ -1643,7 +1658,10 @@ class _MorningNoteCard extends StatelessWidget {
 class _PlanList extends StatelessWidget {
   final TrainScreenV2 plan;
   final void Function(PlanExerciseV2 ex)? onSwap;
-  const _PlanList({required this.plan, this.onSwap});
+  /// Null once there is no program day to append to (a rest day never shows
+  /// this list) or while the session is already under way.
+  final VoidCallback? onAdd;
+  const _PlanList({required this.plan, this.onSwap, this.onAdd});
 
   @override
   Widget build(BuildContext context) {
@@ -1662,7 +1680,46 @@ class _PlanList extends StatelessWidget {
           _PlanRow(ex: e, onSwap: onSwap == null ? null : () => onSwap!(e)),
           const SizedBox(height: 8),
         ],
+        if (onAdd != null) _AddExerciseRow(onTap: onAdd!),
       ],
+    );
+  }
+}
+
+/// The entry point for Task 5: appending a lift beyond what the generator
+/// prescribed. The generator's 4-6 lift cap is a rule about what we
+/// prescribe, not a limit on what a lifter may do.
+class _AddExerciseRow extends StatelessWidget {
+  final VoidCallback onTap;
+  const _AddExerciseRow({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      haptic: PressFx.light,
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 13),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.borderStrong),
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add_rounded, size: 16, color: AppColors.accent),
+            SizedBox(width: 6),
+            Text('Add exercise',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                    color: AppColors.accent)),
+          ],
+        ),
+      ),
     );
   }
 }

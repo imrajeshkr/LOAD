@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import '../../models/v2_models.dart';
 import '../../services/session_controller.dart';
 import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
+import '../../services/supabase_service_v2.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/overscroll_pager.dart';
@@ -98,7 +100,16 @@ class _LiftBody extends StatelessWidget {
       children: [
         _ExerciseHead(e: e, index: c.order.indexOf(exIdx)),
         const SizedBox(height: 12),
-        _GuideMedia(e: e, cuesOpen: cuesOpen, onToggle: current ? c.toggleCues : () {}),
+        _GuideMedia(
+          e: e,
+          cuesOpen: cuesOpen,
+          onToggle: current ? c.toggleCues : () {},
+          // A neighbour mid-drag is not actionable (see the class doc on
+          // _LiftBody) — "Add a photo" is gated the same way as the cues
+          // toggle, not just visually inert.
+          interactive: current,
+          onDemoPathAdded: current ? (path) => c.setDemoPath(exIdx, path) : null,
+        ),
         if (cuesOpen && e.cues.isNotEmpty) ...[
           const SizedBox(height: 9),
           _Cues(cues: e.cues),
@@ -598,14 +609,83 @@ class _ExerciseHead extends StatelessWidget {
   }
 }
 
-class _GuideMedia extends StatelessWidget {
+/// Task 7: a lift with no illustration and no path to one (a catalogue row) is
+/// just a placeholder — but a lift the lifter OWNS gets a tappable "Add a
+/// photo" in that spot instead, since they can actually write to that row.
+/// Ownership isn't in [PlanExerciseV2] (train_screen doesn't return it), so
+/// this checks lazily and only when there's no demo to show — the common case
+/// never pays for the extra round trip.
+class _GuideMedia extends StatefulWidget {
   final PlanExerciseV2 e;
   final bool cuesOpen;
   final VoidCallback onToggle;
-  const _GuideMedia({required this.e, required this.cuesOpen, required this.onToggle});
+  /// False for a neighbour mid-drag — see `_LiftBody`'s doc comment. Neither
+  /// the cues toggle nor "Add a photo" reaches into controller/session state
+  /// that belongs to a different exercise while that's the case.
+  final bool interactive;
+  /// Called with the new `demo_path` once a photo upload succeeds, so the
+  /// caller can patch the in-session plan. Null when not [interactive].
+  final ValueChanged<String>? onDemoPathAdded;
+  const _GuideMedia({
+    required this.e,
+    required this.cuesOpen,
+    required this.onToggle,
+    this.interactive = true,
+    this.onDemoPathAdded,
+  });
+
+  @override
+  State<_GuideMedia> createState() => _GuideMediaState();
+}
+
+class _GuideMediaState extends State<_GuideMedia> {
+  bool? _owned; // null = unknown/checking; a catalogue row never resolves this
+  bool _uploading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkOwnership();
+  }
+
+  @override
+  void didUpdateWidget(covariant _GuideMedia old) {
+    super.didUpdateWidget(old);
+    if (old.e.exerciseId != widget.e.exerciseId) {
+      _owned = null;
+      _checkOwnership();
+    }
+  }
+
+  Future<void> _checkOwnership() async {
+    if (widget.e.demoPath != null) return; // never needed — there's a photo
+    final owns = await SupabaseService.instance.ownsExercise(widget.e.exerciseId);
+    if (mounted) setState(() => _owned = owns);
+  }
+
+  Future<void> _addPhoto() async {
+    if (_uploading) return;
+    final picked = await ImagePicker()
+        .pickImage(source: ImageSource.gallery, maxWidth: 1200, imageQuality: 85);
+    if (picked == null || !mounted) return;
+    setState(() => _uploading = true);
+    try {
+      final bytes = await picked.readAsBytes();
+      final ext = picked.name.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
+      final path = await SupabaseService.instance.uploadExerciseDemo(
+          exerciseId: widget.e.exerciseId, bytes: bytes, ext: ext);
+      if (path != null) widget.onDemoPathAdded?.call(path);
+    } catch (_) {
+      // Optional everywhere: a failed upload just leaves the placeholder up.
+    } finally {
+      if (mounted) setState(() => _uploading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final url = SupabaseService.instance.demoUrl(e.demoPath);
+    final url = SupabaseService.instance.demoUrl(widget.e.demoPath);
+    final offerPhoto = widget.interactive && url == null && _owned == true;
     return ClipRRect(
       borderRadius: BorderRadius.circular(18),
       child: Container(
@@ -617,6 +697,31 @@ class _GuideMedia extends StatelessWidget {
             if (url != null)
               Image.network(url, fit: BoxFit.contain,
                   errorBuilder: (_, e, s) => const SizedBox())
+            else if (offerPhoto)
+              Pressable(
+                haptic: PressFx.light,
+                onTap: _uploading ? null : _addPhoto,
+                child: Center(
+                  child: _uploading
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.add_a_photo_rounded, color: Color(0xFFB9B0A6), size: 32),
+                            SizedBox(height: 7),
+                            Text('Add a photo',
+                                style: TextStyle(
+                                    fontFamily: AppTheme.fontFamily,
+                                    fontWeight: FontWeight.w500,
+                                    fontSize: 11.5,
+                                    color: Color(0xFF8A8178))),
+                          ],
+                        ),
+                ),
+              )
             else
               const Center(
                   child: Icon(Icons.fitness_center_rounded, color: Color(0xFFB9B0A6), size: 40)),
@@ -624,7 +729,7 @@ class _GuideMedia extends StatelessWidget {
               bottom: 10,
               right: 10,
               child: Pressable(
-                onTap: onToggle,
+                onTap: widget.onToggle,
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                   decoration: BoxDecoration(
@@ -632,10 +737,10 @@ class _GuideMedia extends StatelessWidget {
                     borderRadius: BorderRadius.circular(16),
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(cuesOpen ? Icons.expand_less_rounded : Icons.menu_book_rounded,
+                    Icon(widget.cuesOpen ? Icons.expand_less_rounded : Icons.menu_book_rounded,
                         size: 14, color: AppColors.accent),
                     const SizedBox(width: 6),
-                    Text(cuesOpen ? 'Hide cues' : 'How to',
+                    Text(widget.cuesOpen ? 'Hide cues' : 'How to',
                         style: const TextStyle(
                             fontFamily: AppTheme.fontFamily,
                             fontWeight: FontWeight.w500,

@@ -53,6 +53,29 @@ class PlanExerciseV2 {
 
   bool get isBodyweight => loadType == 'bodyweight_reps';
 
+  /// A copy with [demoPath] overridden — used after a lifter adds a photo to
+  /// a lift in-session, so the guide re-renders without a full plan reload.
+  PlanExerciseV2 copyWith({String? demoPath}) => PlanExerciseV2(
+        exerciseId: exerciseId,
+        name: name,
+        loadType: loadType,
+        ordinal: ordinal,
+        setsTarget: setsTarget,
+        repLow: repLow,
+        repHigh: repHigh,
+        restSeconds: restSeconds,
+        demoPath: demoPath ?? this.demoPath,
+        weightStep: weightStep,
+        prefillKg: prefillKg,
+        prefillReps: prefillReps,
+        lastSets: lastSets,
+        cues: cues,
+        joints: joints,
+        doneSets: doneSets,
+        coachNote: coachNote,
+        isDeload: isDeload,
+      );
+
   /// Step used by the ± chips: catalog/derived value, else 2.5, else n/a.
   double get step => weightStep ?? 2.5;
 
@@ -145,6 +168,56 @@ class SwapCandidateV2 {
       ];
 }
 
+/// One row of `browse_exercises()` — the whole reachable catalogue plus the
+/// caller's own private exercises, for the "+ Add exercise" picker. A sibling
+/// to [SwapCandidateV2] rather than a reuse: this list isn't scoped to one
+/// source exercise, so it also carries [pattern] (for the chip row) and
+/// [isMine] (custom exercises bypass the environment/training-age filters).
+class BrowseExerciseV2 {
+  final String exerciseId;
+  final String slug;
+  final String name;
+  final bool isCore;
+  final String? mechanic;
+  final String? equipment;
+  final String muscle;
+  final String? pattern;
+  final String? demoPath;
+  final bool isMine;
+
+  const BrowseExerciseV2({
+    required this.exerciseId,
+    required this.slug,
+    required this.name,
+    required this.isCore,
+    required this.mechanic,
+    required this.equipment,
+    required this.muscle,
+    required this.pattern,
+    required this.demoPath,
+    required this.isMine,
+  });
+
+  factory BrowseExerciseV2.fromJson(Map<String, dynamic> j) => BrowseExerciseV2(
+        exerciseId: j['exercise_id'] as String,
+        slug: (j['slug'] as String?) ?? '',
+        name: (j['name'] as String?) ?? '',
+        isCore: (j['is_core'] as bool?) ?? false,
+        mechanic: j['mechanic'] as String?,
+        equipment: j['equipment'] as String?,
+        muscle: (j['muscle'] as String?) ?? '',
+        pattern: j['pattern'] as String?,
+        demoPath: j['demo_path'] as String?,
+        isMine: (j['is_mine'] as bool?) ?? false,
+      );
+
+  /// Short descriptors under the name — what a lifter scans to decide.
+  List<String> get tags => [
+        if (equipment != null && equipment!.isNotEmpty) equipment!,
+        if (mechanic != null && mechanic!.isNotEmpty) mechanic!,
+      ];
+}
+
 /// What a rebuild actually did, from `program_diff()`. Shown afterwards
 /// rather than in the confirmation sheet — the sheet runs before the new
 /// program exists, and the question a lifter is asking is "what did you just
@@ -190,6 +263,18 @@ class TrainScreenV2 {
     required this.week,
     required this.upcoming,
   });
+
+  /// Today's scheduled program day id, read off the `week` row marked
+  /// `isToday` — `train_screen()` doesn't return it at the top level, but
+  /// every week row already carries its own. Needed by `add_day_exercise`,
+  /// which appends to a specific day rather than "today" in the abstract.
+  /// Null on a rest day, where there is no day to append to.
+  String? get todayProgramDayId {
+    for (final w in week) {
+      if (w.isToday) return w.programDayId;
+    }
+    return null;
+  }
 
   TrainScreenV2 copyWith({List<WeekDayV2>? week}) => TrainScreenV2(
         today: today,
