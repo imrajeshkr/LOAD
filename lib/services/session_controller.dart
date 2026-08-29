@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../models/v2_models.dart';
 import 'haptics.dart';
+import 'planned_sets.dart';
 import 'supabase_service.dart';
 import 'supabase_service_v2.dart';
 
@@ -47,6 +48,7 @@ class SessionController extends ChangeNotifier {
     _unconfirmed = List.filled(exercises.length, false);
     _order = List.generate(exercises.length, (i) => i);
     _skipped = List.filled(exercises.length, false);
+    _planned = List<PlannedSets?>.filled(exercises.length, null);
 
     // Rehydrate from what's already logged, so "Continue session" actually
     // continues — otherwise every resume silently started blank at lift one.
@@ -80,6 +82,9 @@ class SessionController extends ChangeNotifier {
   late List<EffortV2?> _effort;
   late List<int> _extra; // delta on planned set count
   late List<bool> _unconfirmed;
+
+  /// One editable row set per exercise, seeded on first view.
+  late List<PlannedSets?> _planned;
 
   /// Display order over [exercises] — the free-order board reorders this, not
   /// the underlying lists. Identity until the lifter drags.
@@ -141,6 +146,29 @@ class SessionController extends ChangeNotifier {
     final w = _stagedKg ?? (last?.kg ?? planKg(idx));
     final r = _stagedReps ?? (last?.reps ?? e.prefillReps);
     return (w, r);
+  }
+
+  /// The editable rows for the current exercise, seeded on first access from
+  /// the same prefill `staged()` used to compute for the next set alone.
+  PlannedSets get planned {
+    final existing = _planned[idx];
+    if (existing != null) {
+      existing.grow(target(idx));
+      return existing;
+    }
+    final e = ex;
+    final seeded = PlannedSets.seed(
+      count: target(idx),
+      kg: planKg(idx),
+      reps: e.prefillReps,
+    );
+    _planned[idx] = seeded;
+    return seeded;
+  }
+
+  void adjustPlanned(int n, {double dKg = 0, int dReps = 0}) {
+    planned.adjust(n, dKg: dKg, dReps: dReps);
+    notifyListeners();
   }
 
   bool get exDone => _sets[idx].length >= target(idx);
