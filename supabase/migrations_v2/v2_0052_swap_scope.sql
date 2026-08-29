@@ -17,6 +17,12 @@ comment on column exercise_swaps.expires_on is
   'row created before v2_0052 means.';
 
 -- p_until null keeps the old behaviour, so existing callers are unaffected.
+-- CREATE OR REPLACE cannot change a function's signature — adding p_until
+-- makes this a distinct overload, which leaves the old 2-arg swap_exercise in
+-- place and every 2-arg call ambiguous (it now matches both the old function
+-- and this one via its default). Drop the old signature explicitly.
+drop function if exists swap_exercise(uuid, uuid);
+
 create or replace function swap_exercise(
   p_from_exercise_id uuid,
   p_to_exercise_id uuid,
