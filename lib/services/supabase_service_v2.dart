@@ -939,10 +939,18 @@ extension SupabaseServiceV2 on SupabaseService {
     return list;
   }
 
-  /// Record a standing substitution and apply it to the live plan.
-  Future<void> swapExercise(String fromId, String toId) =>
-      client.rpc('swap_exercise',
-          params: {'p_from_exercise_id': fromId, 'p_to_exercise_id': toId});
+  /// Record a substitution and apply it to the live plan.
+  /// [until] null = standing (survives regeneration); a date = expires after it.
+  Future<void> swapExercise(String fromId, String toId, {DateTime? until}) =>
+      client.rpc('swap_exercise', params: {
+        'p_from_exercise_id': fromId,
+        'p_to_exercise_id': toId,
+        'p_until': until == null
+            ? null
+            : '${until.year.toString().padLeft(4, '0')}-'
+              '${until.month.toString().padLeft(2, '0')}-'
+              '${until.day.toString().padLeft(2, '0')}',
+      });
 
   /// Drop the substitution and put the original lift back.
   Future<void> unswapExercise(String fromId) =>

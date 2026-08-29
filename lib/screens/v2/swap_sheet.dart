@@ -36,6 +36,7 @@ class _SwapSheet extends StatefulWidget {
 class _SwapSheetState extends State<_SwapSheet> {
   List<SwapCandidateV2>? _all;
   String _query = '';
+  String? _muscle;
   String? _busyId;
   String? _error;
 
@@ -55,22 +56,37 @@ class _SwapSheetState extends State<_SwapSheet> {
     }
   }
 
-  List<SwapCandidateV2> get _filtered {
-    final all = _all ?? const <SwapCandidateV2>[];
-    if (_query.trim().isEmpty) return all;
-    final q = _query.toLowerCase();
-    return all
-        .where((c) =>
-            c.name.toLowerCase().contains(q) ||
-            (c.equipment ?? '').toLowerCase().contains(q))
-        .toList();
+  /// Distinct muscles present in the loaded candidates, in the order they
+  /// first appear — there is no natural alphabetical grouping to prefer.
+  List<String> get _muscles {
+    final seen = <String>{};
+    for (final c in _all ?? const <SwapCandidateV2>[]) {
+      if (c.muscle.isNotEmpty) seen.add(c.muscle);
+    }
+    return seen.toList();
   }
 
-  Future<void> _apply(SwapCandidateV2 c) async {
+  List<SwapCandidateV2> get _filtered {
+    var rows = _all ?? const <SwapCandidateV2>[];
+    if (_muscle != null) {
+      rows = rows.where((c) => c.muscle == _muscle).toList();
+    }
+    if (_query.trim().isNotEmpty) {
+      final q = _query.toLowerCase();
+      rows = rows
+          .where((c) =>
+              c.name.toLowerCase().contains(q) ||
+              (c.equipment ?? '').toLowerCase().contains(q))
+          .toList();
+    }
+    return rows;
+  }
+
+  Future<void> _apply(SwapCandidateV2 c, {DateTime? until}) async {
     setState(() => _busyId = c.exerciseId);
     try {
       await SupabaseService.instance
-          .swapExercise(widget.ex.exerciseId, c.exerciseId);
+          .swapExercise(widget.ex.exerciseId, c.exerciseId, until: until);
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {
@@ -80,6 +96,19 @@ class _SwapSheetState extends State<_SwapSheet> {
         });
       }
     }
+  }
+
+  /// The scope prompt: "just today" is not a technical detail, it is the
+  /// whole point — swapping a lift silently becoming a programme change is
+  /// exactly what this sheet exists to prevent.
+  Future<void> _confirmAndApply(SwapCandidateV2 c) async {
+    final choice = await showModalBottomSheet<_SwapScope>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _ScopeSheet(fromName: widget.ex.name, toName: c.name),
+    );
+    if (choice == null || !mounted) return;
+    await _apply(c, until: choice == _SwapScope.today ? DateTime.now() : null);
   }
 
   @override
@@ -163,6 +192,26 @@ class _SwapSheetState extends State<_SwapSheet> {
                 ),
               ),
             ),
+            if (_muscles.length > 1)
+              SizedBox(
+                height: 34,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 8),
+                  children: [
+                    for (final m in _muscles)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: _FilterChip(
+                          label: m,
+                          selected: _muscle == m,
+                          onTap: () =>
+                              setState(() => _muscle = _muscle == m ? null : m),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(18, 4, 18, 4),
@@ -196,7 +245,7 @@ class _SwapSheetState extends State<_SwapSheet> {
                                 _CandidateRow(
                                     c: c,
                                     busy: _busyId == c.exerciseId,
-                                    onTap: () => _apply(c)),
+                                    onTap: () => _confirmAndApply(c)),
                             ],
                             if (ext.isNotEmpty) ...[
                               _sectionLabel(core.isEmpty
@@ -206,7 +255,7 @@ class _SwapSheetState extends State<_SwapSheet> {
                                 _CandidateRow(
                                     c: c,
                                     busy: _busyId == c.exerciseId,
-                                    onTap: () => _apply(c)),
+                                    onTap: () => _confirmAndApply(c)),
                             ],
                           ],
                         ),
@@ -282,6 +331,136 @@ class _CandidateRow extends StatelessWidget {
                     size: 17, color: AppColors.textFaint),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _FilterChip({required this.label, required this.selected, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      haptic: PressFx.light,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent : AppColors.surface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+              color: selected ? AppColors.accent : AppColors.border),
+        ),
+        child: Text(label,
+            style: TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w500,
+                fontSize: 12,
+                color: selected ? AppColors.onAccent : AppColors.textMuted)),
+      ),
+    );
+  }
+}
+
+/// How long a swap should last — asked explicitly so "the rack was busy" does
+/// not silently become a programme change.
+enum _SwapScope { today, everyWeek }
+
+class _ScopeSheet extends StatelessWidget {
+  final String fromName;
+  final String toName;
+  const _ScopeSheet({required this.fromName, required this.toName});
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+        padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceRaised,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('How long should this swap last?',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                    color: AppColors.textPrimary)),
+            const SizedBox(height: 4),
+            Text('Swapping $fromName for $toName.',
+                style: const TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontSize: 12.5,
+                    color: AppColors.textMuted)),
+            const SizedBox(height: 16),
+            Pressable(
+              haptic: PressFx.medium,
+              onTap: () => Navigator.of(context).pop(_SwapScope.today),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: AppColors.accent,
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Text('Just today',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        color: AppColors.onAccent)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Pressable(
+              haptic: PressFx.medium,
+              onTap: () => Navigator.of(context).pop(_SwapScope.everyWeek),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppColors.border),
+                ),
+                child: const Text('Every week',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                        color: AppColors.textPrimary)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Pressable(
+              haptic: PressFx.light,
+              onTap: () => Navigator.of(context).pop(),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                alignment: Alignment.center,
+                child: const Text('Cancel',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 13.5,
+                        color: AppColors.textMuted)),
+              ),
+            ),
+          ],
         ),
       ),
     );
