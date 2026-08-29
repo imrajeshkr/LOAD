@@ -68,6 +68,7 @@ class SessionController extends ChangeNotifier {
       }
     }
     idx = foundIncomplete ? firstIncomplete : 0;
+    _openCuesIfFirstTime();
 
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) => notifyListeners());
   }
@@ -95,7 +96,11 @@ class SessionController extends ChangeNotifier {
   /// missed, restorable from the board.
   late List<bool> _skipped;
 
-  bool cuesOpen = true;
+  /// Hidden by default: the set table is the point of this screen, and cues
+  /// pushed it below the fold. Opened once for a lift the user has never done
+  /// — hiding form cues from someone who has never squatted is withholding,
+  /// not decluttering. See `_openCuesIfFirstTime`.
+  bool cuesOpen = false;
   bool askFeel = false;
 
   // staged (uncommitted) values for the next live set; null = use computed
@@ -237,11 +242,17 @@ class SessionController extends ChangeNotifier {
   void goTo(int exIdx) {
     if (exIdx < 0 || exIdx >= exercises.length) return;
     idx = exIdx;
-    cuesOpen = _sets[idx].isEmpty;
+    _openCuesIfFirstTime();
     askFeel = false;
     _stagedKg = null;
     _stagedReps = null;
     notifyListeners();
+  }
+
+  /// A lift with no previous-session history is one this lifter has never
+  /// done. Show them how, once.
+  void _openCuesIfFirstTime() {
+    cuesOpen = ex.lastSets.isEmpty && ex.cues.isNotEmpty;
   }
 
   /// Reorder the board (ReorderableList indices).
