@@ -656,12 +656,30 @@ class _SetTable extends StatelessWidget {
               Text('Target ${e.prescription}',
                   style: const TextStyle(
                       fontFamily: AppTheme.fontFamily, fontSize: 10, color: AppColors.inactiveFill)),
-              Pressable(
-                onTap: c.addSet,
-                child: const Text('+ add a set',
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textDim)),
-              ),
+              Row(children: [
+                // Was "Done all sets" in the bottom bar. Per-row logging makes
+                // three sets three taps, so this shortcut has to stay — it just
+                // belongs with the sets rather than with the lift.
+                if (c.sets.length < target0(c))
+                  Pressable(
+                    haptic: PressFx.light,
+                    onTap: c.fillRemaining,
+                    child: const Padding(
+                      padding: EdgeInsets.only(right: 14),
+                      child: Text('log the rest',
+                          style: TextStyle(
+                              fontFamily: AppTheme.fontFamily,
+                              fontSize: 11,
+                              color: AppColors.textDim)),
+                    ),
+                  ),
+                Pressable(
+                  onTap: c.addSet,
+                  child: const Text('+ add a set',
+                      style: TextStyle(
+                          fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textDim)),
+                ),
+              ]),
             ],
           ),
         ),
@@ -998,50 +1016,55 @@ class _BottomBar extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           if (c.resting) _RestBar(c: c),
-          if (c.entry == null && c.sets.isEmpty)
-            Column(
-              children: [
-                _PrimaryBtn(
-                  label: 'Start this lift',
-                  onTap: c.startLive,
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(child: _SecondaryBtn(icon: Icons.block_rounded, label: 'Skip', onTap: c.skipLift)),
-                    const SizedBox(width: 8),
-                    Expanded(child: _SecondaryBtn(icon: Icons.schedule_rounded, label: 'Log at the end', onTap: c.deferLift)),
-                  ],
-                ),
-              ],
-            )
-          else if (c.exDone)
+          if (c.exDone || c.entry == EntryModeV2.deferred)
             _PrimaryBtn(
               label: c.hasOtherOpenLift ? 'Next lift' : 'Finish session',
               onTap: c.advance,
             )
-          else if (c.entry == EntryModeV2.live && !c.resting)
-            Column(
-              children: [
-                _PrimaryBtn(
-                  label: 'Log set ${c.sets.length + 1}',
-                  onTap: () => c.logSet(),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(child: _SecondaryBtn(icon: Icons.done_all_rounded, label: 'Done all sets', onTap: c.fillRemaining)),
-                    const SizedBox(width: 8),
-                    Expanded(child: _SecondaryBtn(icon: Icons.schedule_rounded, label: 'Log at the end', onTap: c.deferLift)),
-                  ],
-                ),
-              ],
-            )
-          else if (c.entry == EntryModeV2.deferred)
+          else ...[
             _PrimaryBtn(
-              label: c.hasOtherOpenLift ? 'Next lift' : 'Finish session',
-              onTap: c.advance,
+              // Zero sets is not "done", it is "skipped" — and Skip is right
+              // there. Done never invents sets; "log the rest" does that, and
+              // lives with the set table.
+              label: 'Done',
+              onTap: c.sets.isEmpty ? null : c.advance,
             ),
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Pressable(
+                  haptic: PressFx.light,
+                  onTap: c.deferLift,
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Text('Do it later',
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontSize: 12,
+                            color: AppColors.textMuted)),
+                  ),
+                ),
+                const Text('·',
+                    style: TextStyle(
+                        fontFamily: AppTheme.fontFamily,
+                        fontSize: 12,
+                        color: AppColors.textFaint)),
+                Pressable(
+                  haptic: PressFx.strong, // dropping a lift is the destructive one
+                  onTap: c.skipLift,
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    child: Text('Skip',
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontSize: 12,
+                            color: AppColors.textMuted)),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -1555,7 +1578,7 @@ class _CircleBtn extends StatelessWidget {
 
 class _PrimaryBtn extends StatelessWidget {
   final String label;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   const _PrimaryBtn({required this.label, required this.onTap});
   @override
   Widget build(BuildContext context) => Pressable(
@@ -1565,7 +1588,9 @@ class _PrimaryBtn extends StatelessWidget {
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 17),
           alignment: Alignment.center,
-          decoration: BoxDecoration(color: AppColors.accent, borderRadius: BorderRadius.circular(26)),
+          decoration: BoxDecoration(
+              color: onTap == null ? AppColors.inactiveFill : AppColors.accent,
+              borderRadius: BorderRadius.circular(26)),
           child: Text(label,
               style: const TextStyle(
                   fontFamily: AppTheme.fontFamily,

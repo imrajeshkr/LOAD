@@ -314,6 +314,8 @@ class SessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Unused since the start gate was removed — rows log themselves. Kept only
+  /// because the v1 session screen still references it.
   void startLive() {
     _entry[idx] = EntryModeV2.live;
     notifyListeners();
