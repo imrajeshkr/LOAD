@@ -9,6 +9,7 @@ import '../../theme/app_theme.dart';
 import '../../widgets/overscroll_pager.dart';
 import '../../widgets/pressable.dart';
 import '../../widgets/v2_widgets.dart';
+import 'swap_sheet.dart';
 
 /// Phase 1 — the in-session flow. One lift per screen: guide, adjustable set
 /// chips, per-lift effort, non-blocking rest, then a finish screen.
@@ -510,7 +511,20 @@ class _BoardRow extends StatelessWidget {
                   padding: EdgeInsets.only(left: 8),
                   child: Icon(Icons.restore_rounded, size: 18, color: AppColors.accent),
                 )
-              else
+              else ...[
+                // A lift can be replaced until it has been touched — a
+                // logged set, not the start of the session. Once it has
+                // sets against it, swapping would orphan them, so the
+                // action simply isn't offered.
+                if (c.canReplace(exIdx))
+                  Pressable(
+                    haptic: PressFx.light,
+                    onTap: () => _openReplace(context),
+                    child: const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Icon(Icons.swap_horiz_rounded, size: 18, color: AppColors.textFaint),
+                    ),
+                  ),
                 ReorderableDragStartListener(
                   index: pos,
                   child: const Padding(
@@ -518,10 +532,24 @@ class _BoardRow extends StatelessWidget {
                     child: Icon(Icons.drag_indicator_rounded, size: 18, color: AppColors.textFaint),
                   ),
                 ),
+              ],
             ],
           ),
         ),
       ),
+    );
+  }
+
+  /// Opens the same picker used before a session starts, but routes the
+  /// apply through the controller so it also refreshes [c.exercises] and
+  /// re-seeds this lift's planned sets — a bare service call would leave
+  /// the in-session state pointing at the old lift.
+  Future<void> _openReplace(BuildContext context) async {
+    final ex = c.exercises[exIdx];
+    await showSwapSheet(
+      context,
+      ex,
+      onApply: (toId, until) => c.replaceLift(exIdx, toId, until: until),
     );
   }
 }

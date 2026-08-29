@@ -27,7 +27,11 @@ class SessionController extends ChangeNotifier {
 
   final String sessionId;
   final String label;
-  final List<PlanExerciseV2> exercises;
+
+  /// Mutable, not final: [replaceLift] swaps the lift at an index in place
+  /// and reloads this from the server so the new lift's prescription and
+  /// prefill are the server's, not a guess made here.
+  List<PlanExerciseV2> exercises;
 
   /// 'first_set' | 'every_set' | 'never' — from user_preferences.effort_prompt,
   /// read once at session start (Profile's "Ask how the set felt" toggle).
@@ -362,6 +366,22 @@ class SessionController extends ChangeNotifier {
     askFeel = false;
     Haptics.tap();
     await _persist();
+    notifyListeners();
+  }
+
+  /// A lift can be replaced until it has been touched — a logged set, not the
+  /// start of the session. Swapping one with sets against it would orphan them.
+  bool canReplace(int i) => _sets[i].isEmpty;
+
+  /// Swap the lift at [i] for [toId], then reload the plan so the new lift's
+  /// prescription and prefill are the server's, not a guess made here.
+  Future<void> replaceLift(int i, String toId, {DateTime? until}) async {
+    await _svc.swapExercise(exercises[i].exerciseId, toId, until: until);
+    final fresh = await _svc.fetchTrainScreen();
+    final next = fresh?.exercises;
+    if (next == null || next.length != exercises.length) return;
+    exercises = next;
+    _planned[i] = null; // re-seed against the new lift's prefill
     notifyListeners();
   }
 

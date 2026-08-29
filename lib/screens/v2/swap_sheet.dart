@@ -15,20 +15,30 @@ import '../../widgets/pressable.dart';
 /// Everything shown has already cleared the equipment, training-age and injury
 /// filters server-side, so there is nothing here to warn about — Core and
 /// Extended are both safe, they differ only in how much we know about them.
+/// [onApply], when given, replaces the default "call SupabaseService and
+/// hope the caller reloads" apply path — used in-session, where the swap
+/// must also refresh [SessionController.exercises] rather than just the
+/// server row (see `replaceLift`).
+///
 /// Returns true if a swap was applied.
-Future<bool> showSwapSheet(BuildContext context, PlanExerciseV2 ex) async {
+Future<bool> showSwapSheet(
+  BuildContext context,
+  PlanExerciseV2 ex, {
+  Future<void> Function(String toExerciseId, DateTime? until)? onApply,
+}) async {
   final result = await showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
-    builder: (_) => _SwapSheet(ex: ex),
+    builder: (_) => _SwapSheet(ex: ex, onApply: onApply),
   );
   return result ?? false;
 }
 
 class _SwapSheet extends StatefulWidget {
   final PlanExerciseV2 ex;
-  const _SwapSheet({required this.ex});
+  final Future<void> Function(String toExerciseId, DateTime? until)? onApply;
+  const _SwapSheet({required this.ex, this.onApply});
   @override
   State<_SwapSheet> createState() => _SwapSheetState();
 }
@@ -85,8 +95,12 @@ class _SwapSheetState extends State<_SwapSheet> {
   Future<void> _apply(SwapCandidateV2 c, {DateTime? until}) async {
     setState(() => _busyId = c.exerciseId);
     try {
-      await SupabaseService.instance
-          .swapExercise(widget.ex.exerciseId, c.exerciseId, until: until);
+      if (widget.onApply != null) {
+        await widget.onApply!(c.exerciseId, until);
+      } else {
+        await SupabaseService.instance
+            .swapExercise(widget.ex.exerciseId, c.exerciseId, until: until);
+      }
       if (mounted) Navigator.of(context).pop(true);
     } catch (e) {
       if (mounted) {

@@ -1782,6 +1782,13 @@ class _PlanRow extends StatelessWidget {
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                           color: AppColors.accent)),
+                  // Marks the row as replaceable, not merely tappable — a
+                  // gesture nobody finds is not a feature.
+                  if (onSwap != null) ...[
+                    const SizedBox(width: 8),
+                    const Icon(Icons.swap_horiz_rounded,
+                        size: 16, color: AppColors.textFaint),
+                  ],
                 ],
               ),
             ),
