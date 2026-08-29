@@ -6,6 +6,7 @@ import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/overscroll_pager.dart';
 import '../../widgets/pressable.dart';
 import '../../widgets/v2_widgets.dart';
 
@@ -49,40 +50,72 @@ class _LiftScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final e = c.ex;
     return SafeArea(
       child: Column(
         children: [
           _Header(c: c),
           _Rail(c: c),
           Expanded(
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-              children: [
-                _ExerciseHead(e: e, index: c.order.indexOf(c.idx)),
-                const SizedBox(height: 12),
-                _GuideMedia(e: e, cuesOpen: c.cuesOpen, onToggle: c.toggleCues),
-                if (c.cuesOpen && e.cues.isNotEmpty) ...[
-                  const SizedBox(height: 9),
-                  _Cues(cues: e.cues),
-                ],
-                if (e.coachNote != null) ...[
-                  const SizedBox(height: 12),
-                  _CoachNote(e: e),
-                ],
-                const SizedBox(height: 16),
-                _SetTable(c: c),
-                if (c.askFeel) ...[const SizedBox(height: 9), _FeelCard(c: c)],
-                if (c.exDone && !c.askFeel) ...[
-                  const SizedBox(height: 12),
-                  _ExDoneCard(c: c),
-                ],
-              ],
+            child: OverscrollPager(
+              index: c.order.indexOf(c.idx),
+              count: c.order.length,
+              onPage: (k) => c.goTo(c.order[k]),
+              builder: (_, k) => _LiftBody(c: c, exIdx: c.order[k]),
             ),
           ),
           _BottomBar(c: c),
         ],
       ),
+    );
+  }
+}
+
+/// One lift's scrollable body. Rendered for the current lift (full
+/// interaction) and, mid-drag, for the neighbour being pulled into view.
+///
+/// The set table, feel card and done card read controller state that only
+/// exists for the *current* exercise (`c.sets`, `c.askFeel`, `c.exDone` are
+/// all implicitly `_sets[c.idx]` etc.) — there is no per-exercise variant to
+/// hand them. A neighbour mid-drag is also not actionable: the lifter cannot
+/// log a set on a lift that is still sliding in. So a neighbour preview shows
+/// only the static parts — head, guide, cues, coach note — and the toggle on
+/// its guide media is inert rather than reaching into controller state that
+/// belongs to a different exercise.
+class _LiftBody extends StatelessWidget {
+  final SessionController c;
+  final int exIdx;
+  const _LiftBody({required this.c, required this.exIdx});
+
+  @override
+  Widget build(BuildContext context) {
+    final current = exIdx == c.idx;
+    final e = current ? c.ex : c.exercises[exIdx];
+    final cuesOpen = current ? c.cuesOpen : (e.lastSets.isEmpty && e.cues.isNotEmpty);
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+      children: [
+        _ExerciseHead(e: e, index: c.order.indexOf(exIdx)),
+        const SizedBox(height: 12),
+        _GuideMedia(e: e, cuesOpen: cuesOpen, onToggle: current ? c.toggleCues : () {}),
+        if (cuesOpen && e.cues.isNotEmpty) ...[
+          const SizedBox(height: 9),
+          _Cues(cues: e.cues),
+        ],
+        if (e.coachNote != null) ...[
+          const SizedBox(height: 12),
+          _CoachNote(e: e),
+        ],
+        if (current) ...[
+          const SizedBox(height: 16),
+          _SetTable(c: c),
+          if (c.askFeel) ...[const SizedBox(height: 9), _FeelCard(c: c)],
+          if (c.exDone && !c.askFeel) ...[
+            const SizedBox(height: 12),
+            _ExDoneCard(c: c),
+          ],
+        ],
+      ],
     );
   }
 }
