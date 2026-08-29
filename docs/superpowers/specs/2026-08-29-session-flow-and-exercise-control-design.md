@@ -1,6 +1,7 @@
 # Session flow and exercise control — design
 
-**Status:** approved in chat 2026-08-29, not yet implemented.
+**Status:** approved in chat 2026-08-29; revised 2026-08-30 after review.
+Not yet implemented.
 
 Nine annotated items from a real session on the simulator. They decompose into
 two projects that ship independently.
@@ -97,19 +98,38 @@ horizontally scrollable list, each item sized to its content, driven by a
 Progressing through the session therefore scrolls the ribbon right-to-left on
 its own, and lifts off-screen become reachable.
 
-### 2.5 Swipe between exercises, not tap zones (item 7)
+### 2.5 Vertical paging, driven by overscroll (item 7)
 
-**Decision: horizontal swipe with animation, both directions**, plus tapping
-any ribbon item to jump directly.
+**Decision: the next exercise is pulled up from the bottom of the current one.**
 
-Instagram-style edge-tap zones were considered and rejected. That screen is
-dense with tap targets — a stepper on each side of every set row, a log circle
-on each row, a cues toggle. An edge tap beside a weight stepper misfires, and
-the failure is expensive: it either changes a weight or jumps you off a lift
-mid-set. Swipe has no such collision, and the ribbon already provides direct
-random access.
+The lift body already scrolls vertically, so a vertical pager and the content
+would fight over the same gesture. Driving the page change from **overscroll**
+resolves that instead of working around it:
 
----
+- Scroll normally inside an exercise.
+- At the bottom, keep dragging up — the next exercise rises elastically behind
+  the current one, tracking the finger.
+- Release past a threshold (~35% of viewport) → it snaps up and becomes the
+  current lift.
+- Release short of it → it springs back down and nothing changed.
+- At the top, dragging down does the same for the previous exercise.
+
+So the gesture is continuous and reversible: you can see the next lift arriving
+and change your mind, which a discrete swipe does not allow. Tapping any ribbon
+item still jumps directly.
+
+Rejected — **horizontal swipe**: workable, but a second axis for something the
+vertical gesture already expresses, and diagonal thumb drags would occasionally
+page when the lifter meant to scroll.
+
+Rejected — **Instagram-style tap zones**: that screen is dense with tap targets
+(a stepper each side of every set row, a log circle per row, the cues toggle).
+An edge tap beside a weight stepper misfires, and the failure is expensive: it
+either changes a weight or jumps off a lift mid-set.
+
+**This is the highest-risk item in Project A.** It is a custom scroll physics
+interaction, not a stock widget, and it must be built and tested on device
+*after* the simpler items land so nothing else waits on it.
 
 ## 3. Project B — exercise control
 
@@ -152,12 +172,16 @@ That combination means the generator ignores it for free — `bootstrap_user_pro
 already filters `owner_id is null and e.is_core`, so no generator change is
 needed and no one else can ever be prescribed someone's homemade lift.
 
-Rejected: publishing custom exercises to the shared catalogue. It fills the
-catalogue fastest and inherits everything that comes with it — duplicate
-"Bench Press" / "bench press" / "BB Bench", wrong muscle tags, and unreviewed
-uploaded images on a surface we are responsible for. A good custom exercise can
-still be promoted later by flipping `owner_id` to NULL; the schema already
-supports exactly that, so nothing is lost by starting private.
+Rejected: publishing custom exercises to the shared catalogue automatically. It
+fills the catalogue fastest and inherits everything that comes with it —
+duplicate "Bench Press" / "bench press" / "BB Bench", wrong muscle tags, and
+unreviewed uploaded images on a surface we are responsible for.
+
+Promotion happens **manually and separately**: once enough custom exercises
+have accumulated, they get reviewed, de-duplicated, and moved into the
+catalogue by flipping `owner_id` to NULL. That is its own piece of work and is
+not in scope here — but starting private costs nothing, because the schema
+already supports exactly that flip.
 
 ### 3.4 Images, contributed one lifter at a time
 
@@ -222,26 +246,32 @@ Scoping to `owner_id = auth.uid()` and not merely "authenticated" matters: it
 must remain impossible to attach a muscle to a *catalogue* exercise and change
 what every other lifter is prescribed.
 
-### 4.2 Custom exercises need joint data too
+### 4.2 Custom exercises carry no joint data — deliberately
 
-`v2_0033` derived joint stress for all 530 catalogue exercises precisely so the
-injury filter could see them. A user-created exercise starts with none, which
-makes it invisible to that filter rather than safe — the exact failure
-`v2_0033` was written to fix.
+`v2_0033` derived joint stress for all 530 catalogue exercises so the injury
+filter could see them. A custom exercise gets none, and that is the decision,
+not an oversight.
 
-Since we cannot ask a lifter to rate joint stress, a custom exercise inherits
-the derivation rules by its declared pattern and primary muscle, applied at
-creation. Coarser than the catalogue, honest, and never zero.
+The distinction is who chose the lift. The injury filter exists so *we* never
+prescribe someone something that hurts them. A lifter typing in their own
+exercise and adding it to their own day is not being prescribed anything — they
+are choosing, with more knowledge of their body than a joint table has.
+Deriving a stress rating from a name they invented would be a guess wearing the
+authority of data.
 
----
+Muscle mapping is likewise **optional** on the create form. If they map one,
+the picker can filter on it; if they do not, the exercise still works
+everywhere it needs to.
 
 ## 5. Risks
 
 - **A mis-tap now writes a set.** Mitigated by making the log circle a toggle
   (§2.1), which is required, not optional.
-- **Swipe versus vertical scroll.** The lift body scrolls vertically inside a
-  horizontally-swiped pager. Standard, but needs testing on a real device where
-  a diagonal thumb drag is common.
+- **Overscroll paging is custom physics.** §2.5 is the only item here that is
+  not a stock widget: it listens to overscroll, drives an animation controller,
+  and has to feel right rather than merely work. Scheduled last in Project A so
+  nothing else depends on it, and it needs testing on a real device — simulator
+  scrolling does not have the momentum of a thumb.
 - **Custom exercises never get progression history.** They work with the
   existing prefill (catalogue default, then history), but they have no
   `default_start_kg`, so the first session starts from whatever the lifter
