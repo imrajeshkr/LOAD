@@ -1008,12 +1008,19 @@ class _SetChip extends StatelessWidget {
             Expanded(
               child: _Stepper(
                 value: _n(kg),
+                // A kilo a tap, half a kilo a notch. The old step was the
+                // exercise's plate increment, which put 20.5 out of reach on
+                // any barbell lift — and half-kilo jumps are most of what
+                // actually changes week to week.
                 onDown: () => done
-                    ? c.adjustSet(n, dKg: -e.step)
-                    : c.adjustPlanned(n, dKg: -e.step),
+                    ? c.adjustSet(n, dKg: -_kgTap)
+                    : c.adjustPlanned(n, dKg: -_kgTap),
                 onUp: () => done
-                    ? c.adjustSet(n, dKg: e.step)
-                    : c.adjustPlanned(n, dKg: e.step),
+                    ? c.adjustSet(n, dKg: _kgTap)
+                    : c.adjustPlanned(n, dKg: _kgTap),
+                onScrub: (d) => done
+                    ? c.adjustSet(n, dKg: d * _kgNotch)
+                    : c.adjustPlanned(n, dKg: d * _kgNotch),
               ),
             ),
             Container(width: 1, height: 18, color: border),
@@ -1034,6 +1041,9 @@ class _SetChip extends StatelessWidget {
               onUp: () => done
                   ? c.adjustSet(n, dReps: 1)
                   : c.adjustPlanned(n, dReps: 1),
+              onScrub: (d) => done
+                  ? c.adjustSet(n, dReps: d)
+                  : c.adjustPlanned(n, dReps: d),
             ),
           ),
           Pressable(
@@ -1053,26 +1063,101 @@ class _SetChip extends StatelessWidget {
       v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
 }
 
-class _Stepper extends StatelessWidget {
+/// A tap moves a kilo; a notch of scrub moves half of one.
+const double _kgTap = 1.0;
+const double _kgNotch = 0.5;
+
+/// A number you can nudge or sweep.
+///
+/// Two buttons and a label meant every change cost a tap, and the weight step
+/// was the exercise's plate increment — 2.5 kg on a barbell — so 21 or 20.5
+/// could not be reached at all. Microloading is most of what changes between
+/// sessions, and it was the one thing the control could not express.
+///
+/// So the value itself is now a scrub surface: drag it sideways and it counts
+/// off in fine increments with a tick per notch, while the buttons stay for
+/// single, precise steps. Coarse changes are a thumb sweep — five notches is
+/// 2.5 kg — and fine ones are still one tap.
+class _Stepper extends StatefulWidget {
   final String value;
   final VoidCallback onDown;
   final VoidCallback onUp;
-  const _Stepper({required this.value, required this.onDown, required this.onUp});
+
+  /// Called with +1 or -1 for every notch the finger passes. Null leaves the
+  /// control tap-only.
+  final void Function(int notches)? onScrub;
+
+  const _Stepper({
+    required this.value,
+    required this.onDown,
+    required this.onUp,
+    this.onScrub,
+  });
+
+  @override
+  State<_Stepper> createState() => _StepperState();
+}
+
+class _StepperState extends State<_Stepper> {
+  /// Travel per notch. Short enough that a thumb-width sweep is a real change,
+  /// long enough that the hand's natural arc while pressing does not fire one.
+  static const _px = 17.0;
+
+  double _acc = 0;
+  bool _scrubbing = false;
+
+  void _update(double dx) {
+    _acc += dx;
+    while (_acc.abs() >= _px) {
+      final dir = _acc.isNegative ? -1 : 1;
+      _acc -= dir * _px;
+      widget.onScrub!(dir);
+      Haptics.selection();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    Widget label = AnimatedContainer(
+      duration: const Duration(milliseconds: 120),
+      height: 30,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: _scrubbing
+            ? AppColors.accent.withValues(alpha: 0.12)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(9),
+      ),
+      child: Text(widget.value,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+              fontFamily: AppTheme.fontFamily,
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+              color: _scrubbing ? AppColors.accent : AppColors.textPrimary)),
+    );
+
+    if (widget.onScrub != null) {
+      // A horizontal scrub, not a tap. Vertical drags fall through to the
+      // list, so scrolling past a row still works.
+      label = GestureDetector( // interactivity-ok
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragStart: (_) {
+          _acc = 0;
+          setState(() => _scrubbing = true);
+        },
+        onHorizontalDragUpdate: (d) => _update(d.delta.dx),
+        onHorizontalDragEnd: (_) => setState(() => _scrubbing = false),
+        onHorizontalDragCancel: () => setState(() => _scrubbing = false),
+        child: label,
+      );
+    }
+
     return Row(
       children: [
-        _round(Icons.remove_rounded, onDown),
-        Expanded(
-          child: Text(value,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                  color: AppColors.textPrimary)),
-        ),
-        _round(Icons.add_rounded, onUp),
+        _round(Icons.remove_rounded, widget.onDown),
+        Expanded(child: label),
+        _round(Icons.add_rounded, widget.onUp),
       ],
     );
   }
@@ -1083,7 +1168,8 @@ class _Stepper extends StatelessWidget {
           width: 30,
           height: 30,
           alignment: Alignment.center,
-          decoration: const BoxDecoration(color: AppColors.surfaceSunken, shape: BoxShape.circle),
+          decoration: const BoxDecoration(
+              color: AppColors.surfaceSunken, shape: BoxShape.circle),
           child: Icon(icon, size: 15, color: AppColors.textMuted),
         ),
       );
@@ -1525,7 +1611,9 @@ class _ReviewRowState extends State<_ReviewRow> {
   }
 
   void _adjustWeight(int i, double d) {
-    setState(() => _rows[i].kg = ((_rows[i].kg ?? 0) + d).clamp(0, 500));
+    // Snapped like PlannedSets.adjust — half-kilo steps drift otherwise.
+    setState(() => _rows[i].kg =
+        ((((_rows[i].kg ?? 0) + d).clamp(0, 500)) * 4).round() / 4);
   }
 
   void _adjustReps(int i, int d) {
@@ -1616,8 +1704,10 @@ class _ReviewRowState extends State<_ReviewRow> {
                             Expanded(
                               child: _Stepper(
                                 value: '${_n(_rows[i].kg ?? 0)} kg',
-                                onDown: () => _adjustWeight(i, -e.step),
-                                onUp: () => _adjustWeight(i, e.step),
+                                onDown: () => _adjustWeight(i, -_kgTap),
+                                onUp: () => _adjustWeight(i, _kgTap),
+                                onScrub: (d) =>
+                                    _adjustWeight(i, d * _kgNotch),
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -1627,6 +1717,7 @@ class _ReviewRowState extends State<_ReviewRow> {
                               value: '${_rows[i].reps} reps',
                               onDown: () => _adjustReps(i, -1),
                               onUp: () => _adjustReps(i, 1),
+                              onScrub: (d) => _adjustReps(i, d),
                             ),
                           ),
                         ],

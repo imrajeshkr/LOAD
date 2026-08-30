@@ -21,9 +21,14 @@ class PlannedSets {
   /// reps floor at 1 (a logged set with zero reps is not a set).
   void adjust(int n, {double dKg = 0, int dReps = 0}) {
     if (n < 0 || n >= _kg.length) return;
-    _kg[n] = (_kg[n] + dKg).clamp(0, 999);
+    // Snapped to a quarter kilo. Half-kilo steps accumulate binary error —
+    // twenty additions of 0.5 lands on 22.500000000000004, which formats fine
+    // today and compares wrong forever.
+    _kg[n] = _snap((_kg[n] + dKg).clamp(0, 999).toDouble());
     _reps[n] = (_reps[n] + dReps).clamp(1, 100);
   }
+
+  static double _snap(double kg) => (kg * 4).round() / 4;
 
   /// Extend to [count] rows, carrying the last row's values forward — a lifter
   /// adding a fourth set almost always wants what they just did.

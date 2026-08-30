@@ -37,4 +37,17 @@ void main() {
     p.grow(2);
     expect(p.length, 3);
   });
+
+  test('half-kilo steps stay on a quarter-kilo grid', () {
+    // Twenty raw additions of 0.5 lands on 22.500000000000004. That formats
+    // fine and compares wrong, which is the worst combination.
+    final p = PlannedSets.seed(count: 1, kg: 20, reps: 8);
+    for (var i = 0; i < 20; i++) {
+      p.adjust(0, dKg: 0.5);
+    }
+    expect(p.at(0).$1, 30.0);
+
+    p.adjust(0, dKg: -0.5);
+    expect(p.at(0).$1, 29.5);
+  });
 }
