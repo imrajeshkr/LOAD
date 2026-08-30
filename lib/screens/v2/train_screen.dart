@@ -118,10 +118,42 @@ class _TrainTabState extends State<TrainTab> {
     if (mounted) setState(() => _fuel = fuel);
   }
 
+  /// A toast that reads as a surface rather than as text lying on the page.
+  /// The default SnackBar is dark on dark with no edge, and on this palette it
+  /// dissolves into the background — a message nobody sees is not a message.
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(_toast(
+        Row(children: [
+          const Icon(Icons.check_circle_rounded, size: 17, color: AppColors.accent),
+          const SizedBox(width: 10),
+          Expanded(child: Text(msg, style: _toastText)),
+        ]),
+      ));
   }
+
+  SnackBar _toast(Widget content, {Duration? duration}) => SnackBar(
+        content: content,
+        duration: duration ?? const Duration(seconds: 4),
+        backgroundColor: AppColors.surfaceRaised,
+        elevation: 10,
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+        padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: AppColors.borderStrong),
+        ),
+      );
+
+  static const _toastText = TextStyle(
+      fontFamily: AppTheme.fontFamily,
+      fontWeight: FontWeight.w500,
+      fontSize: 13,
+      height: 1.35,
+      color: AppColors.textPrimary);
 
   Future<void> _start() async {
     final plan = _plan;
@@ -192,20 +224,21 @@ class _TrainTabState extends State<TrainTab> {
   /// One day, changed on its own. No other day moves, and picking rest drops
   /// that day's session rather than relocating it — the rule the picker is
   /// built around, so the toast says which it did.
-  Future<void> _onSetDay(WeekDayV2 day, ProgramDayOptionV2? pick) async {
+  Future<void> _onSetDay(
+      WeekDayV2 day, ({ProgramDayOptionV2? opt, String tag}) pick) async {
     try {
-      await SupabaseService.instance.setDaySession(day.date, pick?.id);
+      await SupabaseService.instance.setDaySession(day.date, pick.opt?.id);
       await _reloadQuietly();
       if (!mounted) return;
       final when = _fmtDayMonth(day.date);
-      final what = pick == null ? 'a rest day' : pick.label.toLowerCase();
+      final what = _kindPhrase(pick.tag);
       // One date by default. Rewriting a whole block because someone moved a
       // single Friday around a wedding is the sort of change nobody notices
       // for a month — so the recurring version is offered here, while the
       // thought is fresh, instead of being asked for up front.
-      _snackWithAction(
+      _confirmSnack(
         '$when is $what now.',
-        'Every ${_weekdayName(day.date)}',
+        'Make every ${_weekdayName(day.date)} the same?',
         () => _makeRecurring(day, pick),
       );
     } catch (e) {
@@ -213,33 +246,78 @@ class _TrainTabState extends State<TrainTab> {
     }
   }
 
-  Future<void> _makeRecurring(WeekDayV2 day, ProgramDayOptionV2? pick) async {
+  Future<void> _makeRecurring(
+      WeekDayV2 day, ({ProgramDayOptionV2? opt, String tag}) pick) async {
     try {
       await SupabaseService.instance
-          .setWeekdaySession(day.date.weekday, pick?.id);
+          .setWeekdaySession(day.date.weekday, pick.opt?.id);
       await _reloadQuietly();
       if (!mounted) return;
-      _snack(pick == null
-          ? 'Every ${_weekdayName(day.date)} is a rest day now.'
-          : 'Every ${_weekdayName(day.date)} is ${pick.label.toLowerCase()} now.');
+      _snack('Every ${_weekdayName(day.date)} is '
+          '${_kindPhrase(pick.tag)} now.');
     } catch (e) {
       if (mounted) _snack('Could not change every week. $e');
     }
   }
 
-  void _snackWithAction(String msg, String label, VoidCallback onAction) {
+  /// Confirms what just happened, then asks one question about it.
+  ///
+  /// "Every Sunday" as a bare action label was a noun where a verb was needed
+  /// — it named a thing without saying what tapping it would do. A question
+  /// with a Yes cannot be misread, and it keeps the offer clearly secondary
+  /// to the change that already landed.
+  void _confirmSnack(String done, String question, VoidCallback onYes) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(
-        content: Text(msg),
-        duration: const Duration(seconds: 6),
-        action: SnackBarAction(
-            label: label,
-            onPressed: () {
-              Haptics.selection();
-              onAction();
-            }),
+      ..showSnackBar(_toast(
+        duration: const Duration(seconds: 7),
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Icon(Icons.check_circle_rounded, size: 17, color: AppColors.accent),
+              const SizedBox(width: 10),
+              Expanded(child: Text(done, style: _toastText)),
+            ]),
+            const SizedBox(height: 11),
+            Row(
+              children: [
+                const SizedBox(width: 27),
+                Expanded(
+                  child: Text(question,
+                      style: const TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontSize: 12.5,
+                          height: 1.3,
+                          color: AppColors.textMuted)),
+                ),
+                const SizedBox(width: 10),
+                Pressable(
+                  haptic: PressFx.medium,
+                  onTap: () {
+                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                    onYes();
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text('Yes',
+                        style: TextStyle(
+                            fontFamily: AppTheme.fontFamily,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 12.5,
+                            color: AppColors.onAccent)),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ));
   }
 
@@ -721,8 +799,9 @@ class _WeekCalendar extends StatefulWidget {
   final DateTime today;
   final DateTime? selected;
   final void Function(WeekDayV2 day) onTapDay;
-  /// Called with the day and the chosen session — null meaning rest.
-  final Future<void> Function(WeekDayV2 day, ProgramDayOptionV2? pick) onSetDay;
+  /// Called with the day and the chosen kind — `opt` null meaning rest.
+  final Future<void> Function(
+      WeekDayV2 day, ({ProgramDayOptionV2? opt, String tag}) pick) onSetDay;
   final List<ProgramDayOptionV2> options;
   const _WeekCalendar({
     required this.week,
@@ -946,7 +1025,7 @@ class _CalendarDay extends StatefulWidget {
   final VoidCallback onTap;
   final VoidCallback onPickerOpen;
   final VoidCallback onPickerClose;
-  final void Function(ProgramDayOptionV2? pick) onPick;
+  final void Function(({ProgramDayOptionV2? opt, String tag}) pick) onPick;
   const _CalendarDay({
     required this.day,
     required this.tag,
@@ -1069,9 +1148,8 @@ class _CalendarDayState extends State<_CalendarDay> {
     _armed = false;
     widget.onPickerClose();
     if (!commit || hot < 0 || hot >= widget.choices.length) return;
-    final pick = widget.choices[hot];
     Haptics.success();
-    widget.onPick(pick.opt);
+    widget.onPick(widget.choices[hot]);
   }
 
   @override
@@ -3106,6 +3184,20 @@ const _weekdaysLong = [
 String _weekdayShort(DateTime d) => _weekdays[(d.weekday - 1).clamp(0, 6)];
 String _weekdayLong(DateTime d) => _weekdaysLong[(d.weekday - 1).clamp(0, 6)];
 String _fmtDate(DateTime d) => '${_weekdayShort(d)} ${d.day} ${_months[d.month - 1]}';
+/// The picker's tag as a sentence. Lowercasing the program day's own label
+/// gave "30 Aug is push day a now" — the A/B suffix is bookkeeping and reads
+/// as a typo in prose, and "legs day" is not what anyone calls it.
+String _kindPhrase(String tag) => switch (tag) {
+      'PUSH' => 'a push day',
+      'PULL' => 'a pull day',
+      'LEGS' => 'a leg day',
+      'UPPER' => 'an upper-body day',
+      'LOWER' => 'a lower-body day',
+      'FULL' => 'a full-body day',
+      'REST' => 'a rest day',
+      _ => '${tag.toLowerCase()} day',
+    };
+
 const _weekdayNames = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
 ];
