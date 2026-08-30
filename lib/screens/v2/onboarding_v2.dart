@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import '../../models/v2_models.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
@@ -21,18 +22,12 @@ class OnboardingV2 extends StatefulWidget {
 
 const _steps = ['goal', 'body', 'days', 'experience', 'place', 'bar', 'map', 'review'];
 
-class _GoalMeta {
-  final IconData icon;
-  final String sub;
-  const _GoalMeta(this.icon, this.sub);
-}
-
-const _goalMeta = {
-  GoalV2.buildMuscle: _GoalMeta(Icons.fitness_center, 'Add size and strength'),
-  GoalV2.loseFat: _GoalMeta(Icons.local_fire_department, 'Lean out while keeping muscle'),
-  GoalV2.strength: _GoalMeta(Icons.trending_up, 'Move heavier weight over time'),
-  GoalV2.generalHealth: _GoalMeta(Icons.favorite, 'Show up, feel good, no drama'),
-  GoalV2.recomposition: _GoalMeta(Icons.healing, 'Rebuild carefully after time off'),
+/// Artwork for the goals the first screen offers. Profile lists all five and
+/// needs none of this — its sheet renders `GoalV2.label` alone.
+const _goalAsset = {
+  GoalV2.buildMuscle: 'assets/goals/build-muscle.svg',
+  GoalV2.loseFat: 'assets/goals/lose-fat.svg',
+  GoalV2.generalHealth: 'assets/goals/stay-consistent.svg',
 };
 
 // Plate catalog for the bench-calibration bar (fixed, not the gym inventory).
@@ -151,7 +146,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
     switch (_stepId) {
       case 'goal':
         if (_coachChoice) return "Fine by me — I'll start you on general strength and adjust.";
-        if (_goals.isEmpty) return 'Pick one or several. This is the only answer that shapes the whole plan.';
+        if (_goals.isEmpty) return 'This one shapes the whole plan.';
         if (_goals.length == 1) return 'Good. Everything downstream bends toward ${_goals.first.label.toLowerCase()}.';
         return '${_goals.first.label.toLowerCase()} leads, the rest ride along.';
       case 'body':
@@ -482,7 +477,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
   }
 
   (String, String) _titleFor(String id) => switch (id) {
-        'goal' => ('What are we chasing?', "Pick as many as fit. If two pull against each other I'll tell you which one leads."),
+        'goal' => ('What are we chasing?', ''),
         'body' => ('Where are you starting?', 'Drag for the rough number, tap ± to land it exactly.'),
         'days' => ('Which days are yours?', 'Tap the days you can actually show up. Be honest, not ambitious.'),
         'experience' => ('How long have you trained?', 'Not a label — it just tells me how fast to add weight and how much work you can recover from.'),
@@ -505,85 +500,118 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   // ── step: goal ──────────────────────────────────────────────────────────
   Widget _goalStep() {
+    // Three goals plus the coach's-choice tile. "Get stronger" and
+    // "Rehab / return" are deliberately absent: five options to weigh before
+    // you have trained once is a lot, and both remain reachable from Profile,
+    // which lists every goal.
+    const tiles = [GoalV2.buildMuscle, GoalV2.loseFat, GoalV2.generalHealth];
     return Column(
       children: [
-        for (final g in GoalV2.values) _goalCard(g),
-        _coachChoiceCard(),
-        const SizedBox(height: 6),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(
-            _coachChoice
-                ? 'You can change this any time from Profile.'
-                : _goals.length > 1
-                    ? 'The starred one leads — tap it off to promote another.'
-                    : 'Multiple is fine. The first one you tap leads.',
-            style: const TextStyle(
-                fontFamily: AppTheme.fontFamily,
-                fontSize: 11,
-                height: 1.5,
-                color: AppColors.textFaint),
-          ),
+        GridView.count(
+          crossAxisCount: 2,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 11,
+          crossAxisSpacing: 11,
+          childAspectRatio: 0.94,
+          children: [
+            for (final g in tiles) _goalCard(g),
+            _coachChoiceCard(),
+          ],
         ),
+        if (_goals.length > 1) ...[
+          const SizedBox(height: 14),
+          Text('${_goals.first.label} leads.',
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontSize: 11,
+                  color: AppColors.textFaint)),
+        ],
       ],
     );
   }
 
   Widget _goalCard(GoalV2 g) {
-    final meta = _goalMeta[g]!;
     final sel = _goals.contains(g);
-    final leads = sel && _goals.first == g;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 9),
-      child: Pressable(
-        onTap: () => setState(() {
-          _coachChoice = false;
-          sel ? _goals.remove(g) : _goals.add(g);
-        }),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
-          decoration: BoxDecoration(
-            color: sel ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
-            border: Border.all(color: sel ? AppColors.accent : AppColors.border),
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                    color: sel ? AppColors.accent : AppColors.page,
-                    borderRadius: BorderRadius.circular(12)),
-                child: Icon(meta.icon,
-                    size: 20, color: sel ? AppColors.onAccent : AppColors.textMuted),
-              ),
-              const SizedBox(width: 13),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(g.label,
-                        style: const TextStyle(
-                            fontFamily: AppTheme.fontFamily,
-                            fontWeight: FontWeight.w500,
-                            fontSize: 14,
-                            color: AppColors.textPrimary)),
-                    const SizedBox(height: 2),
-                    Text(meta.sub,
+    return _goalTile(
+      asset: _goalAsset[g]!,
+      label: g.label,
+      selected: sel,
+      leads: sel && _goals.first == g,
+      onTap: () => setState(() {
+        _coachChoice = false;
+        sel ? _goals.remove(g) : _goals.add(g);
+      }),
+    );
+  }
+
+  Widget _coachChoiceCard() {
+    return _goalTile(
+      asset: 'assets/goals/coach-choice.svg',
+      label: "I don't know",
+      selected: _coachChoice,
+      leads: false,
+      onTap: () => setState(() {
+        _coachChoice = true;
+        _goals.clear();
+      }),
+    );
+  }
+
+  /// Icon over label, nothing else. Each goal used to carry a subtitle
+  /// explaining it; the pictures do that job, and five stacked paragraphs made
+  /// the first screen of the app read like a form.
+  Widget _goalTile({
+    required String asset,
+    required String label,
+    required bool selected,
+    required bool leads,
+    required VoidCallback onTap,
+  }) {
+    final fg = selected ? AppColors.accent : AppColors.textMuted;
+    return Pressable(
+      haptic: PressFx.light,
+      onTap: onTap,
+      child: Container(
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
+          border: Border.all(color: selected ? AppColors.accent : AppColors.border),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Stack(
+          children: [
+            Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SvgPicture.asset(asset,
+                      width: 44,
+                      height: 44,
+                      colorFilter: ColorFilter.mode(fg, BlendMode.srcIn)),
+                  const SizedBox(height: 12),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(label,
+                        textAlign: TextAlign.center,
                         style: TextStyle(
                             fontFamily: AppTheme.fontFamily,
-                            fontSize: 11,
-                            height: 1.45,
-                            color: sel ? AppColors.textSecondary : AppColors.textMuted)),
-                  ],
-                ),
+                            fontWeight: FontWeight.w500,
+                            fontSize: 13.5,
+                            height: 1.25,
+                            color: selected
+                                ? AppColors.textPrimary
+                                : AppColors.textSecondary)),
+                  ),
+                ],
               ),
-              if (sel)
-                Icon(leads ? Icons.star : Icons.check_circle,
-                    size: 19, color: AppColors.accent),
-            ],
-          ),
+            ),
+            if (leads)
+              const Positioned(
+                top: 10,
+                right: 10,
+                child: Icon(Icons.star_rounded, size: 16, color: AppColors.accent),
+              ),
+          ],
         ),
       ),
     );
@@ -679,65 +707,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
     );
   }
 
-  Widget _coachChoiceCard() {
-    return Pressable(
-      onTap: () => setState(() {
-        _coachChoice = true;
-        _goals.clear();
-      }),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
-        decoration: BoxDecoration(
-          color: _coachChoice
-              ? AppColors.accent.withValues(alpha: 0.09)
-              : const Color(0xFF150F0D),
-          borderRadius: BorderRadius.circular(18),
-        ),
-        child: DottedBorderRow(
-          selected: _coachChoice,
-          child: Row(
-            children: [
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                    color: _coachChoice ? AppColors.accent : AppColors.page,
-                    borderRadius: BorderRadius.circular(12)),
-                child: Icon(Icons.auto_awesome,
-                    size: 20,
-                    color: _coachChoice ? AppColors.onAccent : AppColors.textMuted),
-              ),
-              const SizedBox(width: 13),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text("I don't know — you choose",
-                        style: TextStyle(
-                            fontFamily: AppTheme.fontFamily,
-                            fontWeight: FontWeight.w500,
-                            fontSize: 14,
-                            color: AppColors.textPrimary)),
-                    SizedBox(height: 2),
-                    Text("I'll start you on general strength and read your first two weeks.",
-                        style: TextStyle(
-                            fontFamily: AppTheme.fontFamily,
-                            fontSize: 11,
-                            height: 1.45,
-                            color: AppColors.textMuted)),
-                  ],
-                ),
-              ),
-              if (_coachChoice)
-                const Icon(Icons.check_circle, size: 19, color: AppColors.accent),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ── step: body ──────────────────────────────────────────────────────────
   Widget _bodyStep() {
     return Column(
       children: [
