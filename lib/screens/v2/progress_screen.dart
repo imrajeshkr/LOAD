@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../models/v2_models.dart';
-import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
+import '../../services/failure.dart';
+import '../../widgets/failure_view.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
@@ -44,7 +45,7 @@ class _ProgressTabState extends State<ProgressTab> {
   Set<String> _monthDays = const {};
 
   bool _loading = true;
-  String? _error;
+  Failure? _error;
 
   @override
   void initState() {
@@ -81,10 +82,10 @@ class _ProgressTabState extends State<ProgressTab> {
         _monthDays = r[4] as Set<String>;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, st) {
       if (!mounted) return;
       setState(() {
-        _error = '$e';
+        _error = classifyFailure('progress.load', e, st);
         _loading = false;
       });
     }
@@ -97,7 +98,10 @@ class _ProgressTabState extends State<ProgressTab> {
     }
     final gates = _gates;
     if (_error != null || gates == null) {
-      return _ErrorBox(message: _error ?? 'Not signed in.', onRetry: _load);
+      return FailureView(
+        failure: _error ?? const Failure(FailureKind.session, 'no gates'),
+        onRetry: _load,
+      );
     }
     return SafeArea(
       bottom: false,
@@ -1835,33 +1839,6 @@ class _FooterNote extends StatelessWidget {
             style: const TextStyle(
                 fontFamily: AppTheme.fontFamily, fontSize: 11.5, color: AppColors.textFaint)),
       ],
-    );
-  }
-}
-
-class _ErrorBox extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-  const _ErrorBox({required this.message, required this.onRetry});
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Could not load Progress', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
-            const SizedBox(height: 16),
-            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
-          ],
-        ),
-      ),
     );
   }
 }

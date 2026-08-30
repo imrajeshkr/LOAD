@@ -5,6 +5,8 @@ import '../../widgets/ruler_picker.dart';
 import '../../models/v2_models.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
+import '../../services/diagnostics.dart';
+import '../../services/failure.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
@@ -56,7 +58,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   int _build = 0;
   Timer? _buildTimer;
-  String? _error;
+  Failure? _error;
 
   @override
   void dispose() {
@@ -201,11 +203,11 @@ class _OnboardingV2State extends State<OnboardingV2> {
       await Future.delayed(const Duration(milliseconds: 500));
       if (!mounted) return;
       widget.onFinished();
-    } catch (e) {
+    } catch (e, st) {
       _buildTimer?.cancel();
       if (!mounted) return;
       setState(() {
-        _error = '$e';
+        _error = classifyFailure('onboarding.submit', e, st);
         _screen = 'intake';
         _step = _steps.length - 1;
       });
@@ -371,22 +373,25 @@ class _OnboardingV2State extends State<OnboardingV2> {
                       const Icon(Icons.error_outline, size: 15, color: AppColors.warn),
                       const SizedBox(width: 7),
                       Expanded(
-                        // The real exception is shown, not swallowed. The
-                        // generic "try again" that used to live here hid the
-                        // cause from the person best placed to report it, and
-                        // cost several rounds of guesswork diagnosing a
-                        // failure the app already knew the answer to.
+                        // The failure is classified, not stringified. Showing
+                        // the raw exception here once saved a real diagnosis —
+                        // but it also put a Postgres constraint name on a
+                        // stranger's screen, so the exception now goes to the
+                        // log and only a debug build renders it.
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text("Couldn't build your plan.",
-                                style: TextStyle(
+                            Text(_error!.title,
+                                style: const TextStyle(
                                     fontFamily: AppTheme.fontFamily,
                                     fontSize: 12,
                                     fontWeight: FontWeight.w600,
                                     color: AppColors.warn)),
                             const SizedBox(height: 3),
-                            Text(_error!,
+                            Text(
+                                Diagnostics.showRawErrors
+                                    ? _error!.detail
+                                    : _error!.message,
                                 style: const TextStyle(
                                     fontFamily: AppTheme.fontFamily,
                                     fontSize: 10.5,

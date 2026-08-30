@@ -6,6 +6,8 @@ import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
 import '../../services/session_controller.dart';
 import '../../services/haptics.dart';
+import '../../services/failure.dart';
+import '../../widgets/failure_view.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/pressable.dart';
 import 'exercise_guide_sheet.dart';
@@ -40,7 +42,7 @@ class _TrainTabState extends State<TrainTab> {
   SessionSummaryV2? _summary;
   BodyFuelV2? _fuel;
   List<ProgressionV2> _progressions = const [];
-  String? _error;
+  Failure? _error;
   bool _loading = true;
 
   /// The picker's options. Fetched once with the screen — the program's shape
@@ -99,10 +101,10 @@ class _TrainTabState extends State<TrainTab> {
       // Keep the calendar rolling ~5 weeks ahead. Fire-and-forget: today and
       // the near term already exist, so this load never waits on it.
       svc.ensureSchedule();
-    } catch (e) {
+    } catch (e, st) {
       if (!mounted) return;
       setState(() {
-        _error = '$e';
+        _error = classifyFailure('train.load', e, st);
         _loading = false;
       });
     }
@@ -170,11 +172,11 @@ class _TrainTabState extends State<TrainTab> {
     String? sessionId;
     try {
       sessionId = await svc.openSession(title: plan.label);
-    } catch (e) {
+    } catch (e, st) {
       // Never swallow this again: a failed openSession is exactly what made the
       // Start button look dead. Surface it so the real cause is visible.
       Haptics.error();
-      _snack('Could not start the session: $e');
+      _snack(classifyFailure('train.start', e, st).message);
       return;
     }
     if (sessionId == null || !mounted) return;
@@ -243,8 +245,8 @@ class _TrainTabState extends State<TrainTab> {
         'Make every ${_weekdayName(day.date)} the same?',
         () => _makeRecurring(day, pick),
       );
-    } catch (e) {
-      if (mounted) _snack('Could not change that day. $e');
+    } catch (e, st) {
+      if (mounted) _snack(classifyFailure('train.setDay', e, st).message);
     }
   }
 
@@ -257,8 +259,8 @@ class _TrainTabState extends State<TrainTab> {
       if (!mounted) return;
       _snack('Every ${_weekdayName(day.date)} is '
           '${_kindPhrase(pick.tag)} now.');
-    } catch (e) {
-      if (mounted) _snack('Could not change every week. $e');
+    } catch (e, st) {
+      if (mounted) _snack(classifyFailure('train.setWeekday', e, st).message);
     }
   }
 
@@ -321,6 +323,13 @@ class _TrainTabState extends State<TrainTab> {
           ],
         ),
       ));
+  }
+
+  /// The session is gone — cached token, deleted account, revoked JWT. Clear
+  /// it so root_gate routes back to sign-in; leaving it in place just means
+  /// the next call fails the same way.
+  Future<void> _signOutStaleSession() async {
+    await SupabaseService.instance.signOut();
   }
 
   void _onTapDay(WeekDayV2 d) {
@@ -471,7 +480,11 @@ class _TrainTabState extends State<TrainTab> {
       return const Center(child: CircularProgressIndicator(color: AppColors.accent));
     }
     if (_error != null || _plan == null) {
-      return _ErrorState(message: _error ?? 'Not signed in.', onRetry: _load);
+      return FailureView(
+        failure: _error ?? const Failure(FailureKind.session, 'no plan'),
+        onRetry: _load,
+        onSignIn: _signOutStaleSession,
+      );
     }
     final plan = _plan!;
     final preview = _previewDay;
@@ -3133,34 +3146,6 @@ class _WhatYouDid extends StatelessWidget {
 // ════════════════════════════════════════════════════════════════════════
 // Misc
 // ════════════════════════════════════════════════════════════════════════
-
-class _ErrorState extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-  const _ErrorState({required this.message, required this.onRetry});
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('Could not load Train',
-                style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
-            const SizedBox(height: 16),
-            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 // ── formatting + icon mapping ─────────────────────────────────────────────
 

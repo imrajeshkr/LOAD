@@ -4,6 +4,8 @@ import '../../models/v2_models.dart';
 import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
+import '../../services/failure.dart';
+import '../../widgets/failure_view.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
@@ -22,7 +24,7 @@ class ProfileTab extends StatefulWidget {
 class _ProfileTabState extends State<ProfileTab> {
   ProfileDataV2? _data;
   bool _loading = true;
-  String? _error;
+  Failure? _error;
 
   // Instant state (mirrors the DB, written through on change).
   late PreferencesV2 _prefs;
@@ -68,7 +70,7 @@ class _ProfileTabState extends State<ProfileTab> {
       if (!mounted) return;
       if (data == null) {
         setState(() {
-          _error = 'Not signed in.';
+          _error = const Failure(FailureKind.session, 'no session');
           _loading = false;
         });
         return;
@@ -95,10 +97,10 @@ class _ProfileTabState extends State<ProfileTab> {
         _joints = results[1] as List<JointV2>;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, st) {
       if (!mounted) return;
       setState(() {
-        _error = '$e';
+        _error = classifyFailure('profile.load', e, st);
         _loading = false;
       });
     }
@@ -217,7 +219,10 @@ class _ProfileTabState extends State<ProfileTab> {
       return const Center(child: CircularProgressIndicator(color: AppColors.accent));
     }
     if (_error != null || _data == null) {
-      return _ErrorState(message: _error ?? 'Not signed in.', onRetry: _load);
+      return FailureView(
+        failure: _error ?? const Failure(FailureKind.session, 'no profile'),
+        onRetry: _load,
+      );
     }
     final d = _data!;
     return SafeArea(
@@ -2878,36 +2883,6 @@ class _SheetShell extends StatelessWidget {
                     color: AppColors.textMuted)),
             const SizedBox(height: 16),
             Flexible(child: SingleChildScrollView(child: child)),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorState extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-  const _ErrorState({required this.message, required this.onRetry});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.cloud_off, size: 40, color: AppColors.textFaint),
-            const SizedBox(height: 16),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontSize: 13,
-                    color: AppColors.textMuted)),
-            const SizedBox(height: 20),
-            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
           ],
         ),
       ),

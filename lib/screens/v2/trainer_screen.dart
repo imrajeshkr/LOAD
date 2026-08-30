@@ -3,6 +3,8 @@ import '../../models/v2_models.dart';
 import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
+import '../../services/failure.dart';
+import '../../widgets/failure_view.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/pressable.dart';
 import '../../theme/app_theme.dart';
@@ -25,7 +27,7 @@ class _TrainerTabState extends State<TrainerTab> {
   List<CoachMessageV2> _messages = const [];
   final List<CoachMessageV2> _optimistic = [];
   bool _loading = true;
-  String? _error;
+  Failure? _error;
 
   bool _search = false;
   String _query = '';
@@ -126,10 +128,10 @@ class _TrainerTabState extends State<TrainerTab> {
         // unread in the first place, but keep the flag consistent.
         _markedReadThisVisit = true;
       }
-    } catch (e) {
+    } catch (e, st) {
       if (!mounted) return;
       setState(() {
-        _error = '$e';
+        _error = classifyFailure('trainer.load', e, st);
         _loading = false;
       });
     }
@@ -394,7 +396,7 @@ class _TrainerTabState extends State<TrainerTab> {
       return const Center(child: CircularProgressIndicator(color: AppColors.accent));
     }
     if (_error != null) {
-      return _ErrorState(message: _error!, onRetry: _load);
+      return FailureView(failure: _error!, onRetry: _load);
     }
     final all = [..._messages, ..._optimistic];
     if (all.isEmpty) return _emptyThread();
@@ -1256,31 +1258,4 @@ class _SparklinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_SparklinePainter old) => old.points != points;
-}
-
-class _ErrorState extends StatelessWidget {
-  final String message;
-  final VoidCallback onRetry;
-  const _ErrorState({required this.message, required this.onRetry});
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.cloud_off, size: 38, color: AppColors.textFaint),
-            const SizedBox(height: 14),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily, fontSize: 12, color: AppColors.textMuted)),
-            const SizedBox(height: 18),
-            OutlinedButton(onPressed: () { Haptics.tap(); onRetry(); }, child: const Text('Retry')),
-          ],
-        ),
-      ),
-    );
-  }
 }
