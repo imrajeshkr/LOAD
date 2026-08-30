@@ -558,9 +558,9 @@ class _OnboardingV2State extends State<OnboardingV2> {
         _setupLabel('WHAT YOU WILL TRAIN WITH'),
         Row(children: [
           Expanded(child: _kitTile('Full gym', 'commercial_gym', 'full-gym')),
-          const SizedBox(width: 9),
+          const SizedBox(width: 10),
           Expanded(child: _kitTile('Dumbbells', 'home_gym', 'dumbbells')),
-          const SizedBox(width: 9),
+          const SizedBox(width: 10),
           Expanded(child: _kitTile('Bodyweight', 'bodyweight_only', 'bodyweight')),
         ]),
       ],
@@ -621,9 +621,11 @@ class _OnboardingV2State extends State<OnboardingV2> {
     return _setupTile(
       selected: sel,
       label: label,
+      height: 138,
+      leadingBox: 62,
       leading: SvgPicture.asset('assets/environment/$asset.svg',
-          width: 27,
-          height: 27,
+          width: 58,
+          height: 58,
           colorFilter: ColorFilter.mode(
               sel ? AppColors.accent : AppColors.textMuted, BlendMode.srcIn)),
       onTap: () => setState(() => _environment = value),
@@ -635,12 +637,14 @@ class _OnboardingV2State extends State<OnboardingV2> {
     required String label,
     required Widget leading,
     required VoidCallback onTap,
+    double height = 96,
+    double leadingBox = 28,
   }) {
     return Pressable(
       haptic: PressFx.light,
       onTap: onTap,
       child: Container(
-        height: 96,
+        height: height,
         padding: const EdgeInsets.symmetric(horizontal: 6),
         decoration: BoxDecoration(
           color: selected ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
@@ -650,7 +654,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            SizedBox(height: 28, child: Center(child: leading)),
+            SizedBox(height: leadingBox, child: Center(child: leading)),
             const SizedBox(height: 10),
             Text(label,
                 textAlign: TextAlign.center,
