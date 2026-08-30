@@ -198,12 +198,49 @@ class _TrainTabState extends State<TrainTab> {
       await _reloadQuietly();
       if (!mounted) return;
       final when = _fmtDayMonth(day.date);
-      _snack(pick == null
-          ? '$when is a rest day now.'
-          : '$when is ${pick.label.toLowerCase()} now.');
+      final what = pick == null ? 'a rest day' : pick.label.toLowerCase();
+      // One date by default. Rewriting a whole block because someone moved a
+      // single Friday around a wedding is the sort of change nobody notices
+      // for a month — so the recurring version is offered here, while the
+      // thought is fresh, instead of being asked for up front.
+      _snackWithAction(
+        '$when is $what now.',
+        'Every ${_weekdayName(day.date)}',
+        () => _makeRecurring(day, pick),
+      );
     } catch (e) {
       if (mounted) _snack('Could not change that day. $e');
     }
+  }
+
+  Future<void> _makeRecurring(WeekDayV2 day, ProgramDayOptionV2? pick) async {
+    try {
+      await SupabaseService.instance
+          .setWeekdaySession(day.date.weekday, pick?.id);
+      await _reloadQuietly();
+      if (!mounted) return;
+      _snack(pick == null
+          ? 'Every ${_weekdayName(day.date)} is a rest day now.'
+          : 'Every ${_weekdayName(day.date)} is ${pick.label.toLowerCase()} now.');
+    } catch (e) {
+      if (mounted) _snack('Could not change every week. $e');
+    }
+  }
+
+  void _snackWithAction(String msg, String label, VoidCallback onAction) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(msg),
+        duration: const Duration(seconds: 6),
+        action: SnackBarAction(
+            label: label,
+            onPressed: () {
+              Haptics.selection();
+              onAction();
+            }),
+      ));
   }
 
   void _onTapDay(WeekDayV2 d) {
@@ -3069,6 +3106,11 @@ const _weekdaysLong = [
 String _weekdayShort(DateTime d) => _weekdays[(d.weekday - 1).clamp(0, 6)];
 String _weekdayLong(DateTime d) => _weekdaysLong[(d.weekday - 1).clamp(0, 6)];
 String _fmtDate(DateTime d) => '${_weekdayShort(d)} ${d.day} ${_months[d.month - 1]}';
+const _weekdayNames = [
+  'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+];
+String _weekdayName(DateTime d) => _weekdayNames[(d.weekday - 1).clamp(0, 6)];
+
 String _fmtDayMonth(DateTime d) => '${d.day} ${_months[d.month - 1]}';
 
 /// "3 exercises · 11 sets · about 40 min".

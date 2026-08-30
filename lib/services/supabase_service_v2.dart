@@ -59,6 +59,15 @@ extension SupabaseServiceV2 on SupabaseService {
     });
   }
 
+  /// Promote a day's session to that weekday's standing pattern, rewriting
+  /// every future row on that weekday. [weekday] is ISO: 1=Mon .. 7=Sun.
+  Future<void> setWeekdaySession(int weekday, String? programDayId) async {
+    await client.rpc('set_weekday_session', params: {
+      'p_weekday': weekday,
+      'p_program_day_id': programDayId,
+    });
+  }
+
   /// Every session the active program can put on a day, in rotation order.
   /// Empty when there is no active program.
   Future<List<ProgramDayOptionV2>> fetchProgramDays() async {
