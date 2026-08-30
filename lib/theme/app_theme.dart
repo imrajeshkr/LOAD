@@ -100,15 +100,24 @@ class AppTheme {
         space: 1,
       ),
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: AppColors.surface,
+        backgroundColor: AppColors.surfaceRaised,
         contentTextStyle: const TextStyle(
           fontFamily: fontFamily,
-          fontWeight: FontWeight.w400,
+          fontWeight: FontWeight.w500,
+          fontSize: 13,
           color: AppColors.textPrimary,
         ),
         behavior: SnackBarBehavior.floating,
+        elevation: 10,
+        // Flicked sideways, never down. A downward swipe at the bottom of an
+        // iPhone is Reachability, so the system pulls the screen down out from
+        // under the very gesture meant to dismiss the toast — the user's swipe
+        // gets taken and the message stays.
+        dismissDirection: DismissDirection.horizontal,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(AppRadii.inner),
+          // Without an edge these dissolve into a page of the same colour.
+          side: const BorderSide(color: AppColors.borderStrong),
         ),
       ),
     );

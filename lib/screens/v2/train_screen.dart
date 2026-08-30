@@ -140,6 +140,8 @@ class _TrainTabState extends State<TrainTab> {
         backgroundColor: AppColors.surfaceRaised,
         elevation: 10,
         behavior: SnackBarBehavior.floating,
+        // Matches the app-wide rule in AppTheme: down is Reachability's.
+        dismissDirection: DismissDirection.horizontal,
         margin: const EdgeInsets.fromLTRB(14, 0, 14, 14),
         padding: const EdgeInsets.fromLTRB(14, 13, 14, 13),
         shape: RoundedRectangleBorder(
