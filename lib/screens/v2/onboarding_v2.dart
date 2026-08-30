@@ -555,13 +555,13 @@ class _OnboardingV2State extends State<OnboardingV2> {
           Expanded(child: _levelTile('Over\n2 years', 'advanced', 3)),
         ]),
         const SizedBox(height: 22),
-        _setupLabel('WHERE'),
+        _setupLabel('WHAT YOU WILL TRAIN WITH'),
         Row(children: [
-          Expanded(child: _placeTile('Gym', 'commercial_gym', Icons.fitness_center_rounded)),
+          Expanded(child: _kitTile('Full gym', 'commercial_gym', 'full-gym')),
           const SizedBox(width: 9),
-          Expanded(child: _placeTile('Home', 'home_gym', Icons.home_rounded)),
+          Expanded(child: _kitTile('Dumbbells', 'home_gym', 'dumbbells')),
           const SizedBox(width: 9),
-          Expanded(child: _placeTile('Bodyweight', 'bodyweight_only', Icons.self_improvement_rounded)),
+          Expanded(child: _kitTile('Bodyweight', 'bodyweight_only', 'bodyweight')),
         ]),
       ],
     );
@@ -608,12 +608,24 @@ class _OnboardingV2State extends State<OnboardingV2> {
     );
   }
 
-  Widget _placeTile(String label, String value, IconData icon) {
+  /// The kit, not the room.
+  ///
+  /// This asked "Where do you train?" with Gym / Home / Bodyweight, which
+  /// is two questions wearing one hat: the tense is ambiguous (where you
+  /// have trained, or where you are about to?) and home and bodyweight are
+  /// not alternatives — you can train at home with dumbbells. What the
+  /// generator actually needs is the equipment it may prescribe, so that
+  /// is what the tiles say.
+  Widget _kitTile(String label, String value, String asset) {
     final sel = _environment == value;
     return _setupTile(
       selected: sel,
       label: label,
-      leading: Icon(icon, size: 25, color: sel ? AppColors.accent : AppColors.textMuted),
+      leading: SvgPicture.asset('assets/environment/$asset.svg',
+          width: 27,
+          height: 27,
+          colorFilter: ColorFilter.mode(
+              sel ? AppColors.accent : AppColors.textMuted, BlendMode.srcIn)),
       onTap: () => setState(() => _environment = value),
     );
   }
@@ -1106,9 +1118,9 @@ class _OnboardingV2State extends State<OnboardingV2> {
       (
         label: 'Where you train',
         value: switch (_environment) {
-          'commercial_gym' => 'Commercial gym',
-          'home_gym' => 'Home gym',
-          'bodyweight_only' => 'No equipment',
+          'commercial_gym' => 'Full gym',
+          'home_gym' => 'Dumbbells',
+          'bodyweight_only' => 'Bodyweight',
           _ => 'Not picked',
         },
         step: _steps.indexOf('setup'),

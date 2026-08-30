@@ -1332,9 +1332,9 @@ class _ProfileTabState extends State<ProfileTab> {
 
   Future<void> _openEnvironmentSheet() async {
     const options = [
-      ('Commercial gym', 'commercial_gym'),
-      ('Home gym', 'home_gym'),
-      ('No equipment', 'bodyweight_only'),
+      ('Full gym', 'commercial_gym'),
+      ('Dumbbells', 'home_gym'),
+      ('Bodyweight', 'bodyweight_only'),
     ];
     final snapshot = _environment;
     var applied = false;
@@ -1866,9 +1866,9 @@ class _ProfileTabState extends State<ProfileTab> {
       };
 
   String _environmentDisplay(String? v) => switch (v) {
-        'commercial_gym' => 'Commercial gym',
-        'home_gym' => 'Home gym',
-        'bodyweight_only' => 'No equipment',
+        'commercial_gym' => 'Full gym',
+        'home_gym' => 'Dumbbells',
+        'bodyweight_only' => 'Bodyweight',
         _ => 'Not set',
       };
 

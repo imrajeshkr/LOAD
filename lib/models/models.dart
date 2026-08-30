@@ -26,9 +26,9 @@ class _Enum {
   };
 
   static const environment = {
-    'Commercial gym': 'commercial_gym',
-    'Home gym': 'home_gym',
-    'Bodyweight only': 'bodyweight_only',
+    'Full gym': 'commercial_gym',
+    'Dumbbells': 'home_gym',
+    'Bodyweight': 'bodyweight_only',
   };
 
   static const split = {
