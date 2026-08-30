@@ -95,7 +95,9 @@ class _LiftBody extends StatelessWidget {
     final e = current ? c.ex : c.exercises[exIdx];
     final cuesOpen = current ? c.cuesOpen : (e.lastSets.isEmpty && e.cues.isNotEmpty);
     return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
+      // Bouncing, not merely always-scrollable: OverscrollPager reads the pull
+      // from over-drag pixels, and clamping physics never produces any.
+      physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
       children: [
         _ExerciseHead(e: e, index: c.order.indexOf(exIdx)),
