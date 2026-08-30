@@ -43,6 +43,10 @@ class _TrainTabState extends State<TrainTab> {
   String? _error;
   bool _loading = true;
 
+  /// The picker's options. Fetched once with the screen — the program's shape
+  /// only changes when the plan is rebuilt, which reloads this anyway.
+  List<ProgramDayOptionV2> _programDays = const [];
+
   /// Which future day's plan is being previewed in place; null = today's view.
   /// A date, not an index, so it survives a swap and a background reconcile.
   DateTime? _previewDate;
@@ -79,6 +83,7 @@ class _TrainTabState extends State<TrainTab> {
 
       final results = await Future.wait([
         svc.fetchBodyFuel(),
+        svc.fetchProgramDays(),
         if (completed) svc.fetchSessionSummary(plan!.sessionId!),
         if (completed) svc.fetchProgressions(),
       ]);
@@ -86,8 +91,9 @@ class _TrainTabState extends State<TrainTab> {
       setState(() {
         _plan = plan;
         _fuel = results[0] as BodyFuelV2;
-        _summary = completed ? results[1] as SessionSummaryV2? : null;
-        _progressions = completed ? results[2] as List<ProgressionV2> : const [];
+        _programDays = results[1] as List<ProgramDayOptionV2>;
+        _summary = completed ? results[2] as SessionSummaryV2? : null;
+        _progressions = completed ? results[3] as List<ProgressionV2> : const [];
         _loading = false;
       });
       // Keep the calendar rolling ~5 weeks ahead. Fire-and-forget: today and
@@ -183,6 +189,23 @@ class _TrainTabState extends State<TrainTab> {
 
   /// Tapping a chip: a future day opens its preview, today clears it, the past
   /// does nothing.
+  /// One day, changed on its own. No other day moves, and picking rest drops
+  /// that day's session rather than relocating it — the rule the picker is
+  /// built around, so the toast says which it did.
+  Future<void> _onSetDay(WeekDayV2 day, ProgramDayOptionV2? pick) async {
+    try {
+      await SupabaseService.instance.setDaySession(day.date, pick?.id);
+      await _reloadQuietly();
+      if (!mounted) return;
+      final when = _fmtDayMonth(day.date);
+      _snack(pick == null
+          ? '$when is a rest day now.'
+          : '$when is ${pick.label.toLowerCase()} now.');
+    } catch (e) {
+      if (mounted) _snack('Could not change that day. $e');
+    }
+  }
+
   void _onTapDay(WeekDayV2 d) {
     final plan = _plan;
     if (plan == null) return;
@@ -362,8 +385,9 @@ class _TrainTabState extends State<TrainTab> {
                   week: plan.week,
                   today: plan.today,
                   selected: _previewDate,
-                  onSwap: _onDaySwap,
                   onTapDay: _onTapDay,
+                  onSetDay: _onSetDay,
+                  options: _programDays,
                 ),
                 const SizedBox(height: 16),
                 if (inPreview)
@@ -659,14 +683,17 @@ class _WeekCalendar extends StatefulWidget {
   final List<WeekDayV2> week;
   final DateTime today;
   final DateTime? selected;
-  final Future<void> Function(WeekDayV2 from, WeekDayV2 to) onSwap;
   final void Function(WeekDayV2 day) onTapDay;
+  /// Called with the day and the chosen session — null meaning rest.
+  final Future<void> Function(WeekDayV2 day, ProgramDayOptionV2? pick) onSetDay;
+  final List<ProgramDayOptionV2> options;
   const _WeekCalendar({
     required this.week,
     required this.today,
     required this.selected,
-    required this.onSwap,
     required this.onTapDay,
+    required this.onSetDay,
+    required this.options,
   });
 
   static String _tag(String? label) {
@@ -687,7 +714,9 @@ class _WeekCalendar extends StatefulWidget {
 }
 
 class _WeekCalendarState extends State<_WeekCalendar> {
-  DateTime? _dragFrom;
+  /// The day whose picker is open, and the option the finger is currently
+  /// over. Held here rather than in the chip so only one picker can exist.
+  DateTime? _pickerOn;
 
   DateTime get _today =>
       DateTime(widget.today.year, widget.today.month, widget.today.day);
@@ -703,8 +732,34 @@ class _WeekCalendarState extends State<_WeekCalendar> {
     return true;
   }
 
-  bool _canPickUp(WeekDayV2 d) => _movable(d) && !d.isRest; // nothing to lift on a rest day
-  bool _canDropOn(WeekDayV2 d) => _movable(d); // rest days accept a move
+  /// A rest day can be picked too — turning an empty Tuesday into a Legs day
+  /// is the same operation as turning Sunday's Push into Legs.
+  bool _canPick(WeekDayV2 d) => _movable(d);
+
+  /// Short, unique names for the picker. `_tag` collapses "Push Day A" and
+  /// "Push Day B" to the same PUSH, which is fine on a calendar chip and
+  /// useless in a list where you must tell them apart, so a suffix is added
+  /// only where one is actually needed.
+  List<({ProgramDayOptionV2? opt, String tag})> get _choices {
+    final tags = <String, int>{};
+    for (final o in widget.options) {
+      final t = _WeekCalendar._tag(o.label);
+      tags[t] = (tags[t] ?? 0) + 1;
+    }
+    final seen = <String, int>{};
+    final out = <({ProgramDayOptionV2? opt, String tag})>[];
+    for (final o in widget.options) {
+      final t = _WeekCalendar._tag(o.label);
+      if ((tags[t] ?? 0) > 1) {
+        final n = seen[t] = (seen[t] ?? 0) + 1;
+        out.add((opt: o, tag: '$t ${String.fromCharCode(64 + n)}'));
+      } else {
+        out.add((opt: o, tag: t));
+      }
+    }
+    out.add((opt: null, tag: 'REST'));
+    return out;
+  }
 
   static bool _same(DateTime a, DateTime b) =>
       a.year == b.year && a.month == b.month && a.day == b.day;
@@ -720,7 +775,6 @@ class _WeekCalendarState extends State<_WeekCalendar> {
     final tally = '$done of ${planned.length} done'
         '${extra > 0 ? ' · +$extra extra' : ''}'
         '${missed > 0 ? ' · $missed missed' : ''}';
-    final dragging = _dragFrom != null;
 
     return V2Card(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
@@ -756,14 +810,13 @@ class _WeekCalendarState extends State<_WeekCalendar> {
                     tag: _WeekCalendar._tag(d.label),
                     isPast: _isPast(d.date),
                     selected: widget.selected != null && _same(d.date, widget.selected!),
-                    canPickUp: _canPickUp(d),
-                    canDropOn: _canDropOn(d),
-                    dragging: dragging,
-                    isOrigin: _dragFrom != null && _same(d.date, _dragFrom!),
+                    canPick: _canPick(d),
+                    pickerOpen: _pickerOn != null && _same(d.date, _pickerOn!),
+                    choices: _choices,
                     onTap: () => widget.onTapDay(d),
-                    onDragStarted: () => setState(() => _dragFrom = d.date),
-                    onDragEnd: () => setState(() => _dragFrom = null),
-                    onAccept: (from) => widget.onSwap(from, d),
+                    onPickerOpen: () => setState(() => _pickerOn = d.date),
+                    onPickerClose: () => setState(() => _pickerOn = null),
+                    onPick: (c) => widget.onSetDay(d, c),
                   ),
                 ),
                 if (d != week.last) const SizedBox(width: 4),
@@ -773,18 +826,15 @@ class _WeekCalendarState extends State<_WeekCalendar> {
           const SizedBox(height: 8),
           Row(
             children: [
-              Icon(dragging ? Icons.swap_horiz_rounded : Icons.drag_indicator_rounded,
-                  size: 11, color: dragging ? AppColors.accent : AppColors.textFaint),
+              const Icon(Icons.touch_app_outlined, size: 11, color: AppColors.textFaint),
               const SizedBox(width: 4),
-              Expanded(
+              const Expanded(
                 child: Text(
-                    dragging
-                        ? 'Drop on any day from today on — a training day swaps, a rest day moves.'
-                        : 'Hold a day to rearrange your split · tap a day ahead to see it',
+                    'Hold a day to change it · tap a day ahead to see it',
                     style: TextStyle(
                         fontFamily: AppTheme.fontFamily,
                         fontSize: 9.5,
-                        color: dragging ? AppColors.accent : AppColors.textFaint)),
+                        color: AppColors.textFaint)),
               ),
             ],
           ),
@@ -794,88 +844,240 @@ class _WeekCalendarState extends State<_WeekCalendar> {
   }
 }
 
-/// One chip: base state + tap-to-preview + (for movable days) drag source and
-/// drop target + selection ring. Locked days fade during a drag.
-class _CalendarDay extends StatelessWidget {
+/// One chip: tap previews the day, hold opens the picker.
+///
+/// Hold-then-slide-then-lift, the iOS context-menu gesture: the finger never
+/// leaves the glass, the chip itself does not move (so the week stays readable
+/// while you choose), and lifting outside every option cancels. Built from
+/// onLongPress{Start,MoveUpdate,End} rather than a menu widget because the
+/// highlight has to track the finger continuously for the slide to feel like
+/// one motion instead of two taps.
+class _CalendarDay extends StatefulWidget {
   final WeekDayV2 day;
   final String tag;
   final bool isPast;
   final bool selected;
-  final bool canPickUp;
-  final bool canDropOn;
-  final bool dragging;
-  final bool isOrigin;
+  final bool canPick;
+  final bool pickerOpen;
+  final List<({ProgramDayOptionV2? opt, String tag})> choices;
   final VoidCallback onTap;
-  final VoidCallback onDragStarted;
-  final VoidCallback onDragEnd;
-  final void Function(WeekDayV2 from) onAccept;
+  final VoidCallback onPickerOpen;
+  final VoidCallback onPickerClose;
+  final void Function(ProgramDayOptionV2? pick) onPick;
   const _CalendarDay({
     required this.day,
     required this.tag,
     required this.isPast,
     required this.selected,
-    required this.canPickUp,
-    required this.canDropOn,
-    required this.dragging,
-    required this.isOrigin,
+    required this.canPick,
+    required this.pickerOpen,
+    required this.choices,
     required this.onTap,
-    required this.onDragStarted,
-    required this.onDragEnd,
-    required this.onAccept,
+    required this.onPickerOpen,
+    required this.onPickerClose,
+    required this.onPick,
   });
 
-  static bool _same(DateTime a, DateTime b) =>
-      a.year == b.year && a.month == b.month && a.day == b.day;
+  @override
+  State<_CalendarDay> createState() => _CalendarDayState();
+}
+
+class _CalendarDayState extends State<_CalendarDay> {
+  final _chipKey = GlobalKey();
+  OverlayEntry? _entry;
+  int _hot = -1;
+  final _slots = <Rect>[];
+
+  @override
+  void dispose() {
+    _entry?.remove();
+    _entry = null;
+    super.dispose();
+  }
+
+  void _open() {
+    if (widget.choices.isEmpty) return;
+    final box = _chipKey.currentContext?.findRenderObject() as RenderBox?;
+    final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
+    if (box == null || overlay == null) return;
+    final origin = box.localToGlobal(Offset.zero, ancestor: overlay);
+
+    // The current session starts highlighted, so lifting straight away is a
+    // no-op rather than a silent change to whatever sat under the finger.
+    final currentId = widget.day.programDayId;
+    _hot = widget.choices.indexWhere((c) => c.opt?.id == currentId);
+    if (_hot < 0) _hot = widget.choices.indexWhere((c) => c.opt == null);
+
+    Haptics.selection();
+    widget.onPickerOpen();
+    _entry = OverlayEntry(
+      builder: (_) => _DayPickerOverlay(
+        choices: widget.choices,
+        hot: _hot,
+        anchor: Rect.fromLTWH(
+            origin.dx, origin.dy, box.size.width, box.size.height),
+        screen: overlay.size,
+        onLaidOut: (rects) {
+          _slots
+            ..clear()
+            ..addAll(rects);
+        },
+      ),
+    );
+    Overlay.of(context).insert(_entry!);
+  }
+
+  void _track(Offset global) {
+    if (_entry == null || _slots.isEmpty) return;
+    var hit = -1;
+    for (var i = 0; i < _slots.length; i++) {
+      // Generous vertically: the finger drifts on the way up, and losing the
+      // highlight because you overshot by six pixels feels broken.
+      if (_slots[i].inflate(14).contains(global)) {
+        hit = i;
+        break;
+      }
+    }
+    if (hit != _hot) {
+      _hot = hit;
+      Haptics.selection();
+      _entry!.markNeedsBuild();
+    }
+  }
+
+  void _close({bool commit = false}) {
+    final hot = _hot;
+    _entry?.remove();
+    _entry = null;
+    _slots.clear();
+    _hot = -1;
+    widget.onPickerClose();
+    if (!commit || hot < 0 || hot >= widget.choices.length) return;
+    final pick = widget.choices[hot];
+    if (pick.opt?.id == widget.day.programDayId) return; // nothing changed
+    Haptics.success();
+    widget.onPick(pick.opt);
+  }
 
   @override
   Widget build(BuildContext context) {
-    Widget content = Pressable(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: _DayCell(day: day, isPast: isPast, tag: tag, selected: selected),
+    final cell = Container(
+      key: _chipKey,
+      child: _DayCell(
+          day: widget.day,
+          isPast: widget.isPast,
+          tag: widget.tag,
+          selected: widget.selected,
+          hovering: widget.pickerOpen),
     );
 
-    if (canDropOn) {
-      content = DragTarget<WeekDayV2>(
-        onWillAcceptWithDetails: (d) => !_same(d.data.date, day.date),
-        onAcceptWithDetails: (d) => onAccept(d.data),
-        builder: (context, candidate, rejected) {
-          final hovering = candidate.isNotEmpty;
-          return AnimatedScale(
-            scale: hovering ? 1.06 : 1,
-            duration: const Duration(milliseconds: 120),
-            child: Pressable(
-              behavior: HitTestBehavior.opaque,
-              onTap: onTap,
-              child: _DayCell(
-                  day: day, isPast: isPast, tag: tag, selected: selected, hovering: hovering),
-            ),
-          );
-        },
-      );
+    if (!widget.canPick) {
+      return Pressable(
+          behavior: HitTestBehavior.opaque, onTap: widget.onTap, child: cell);
     }
 
-    if (canPickUp) {
-      content = LongPressDraggable<WeekDayV2>(
-        data: day,
-        onDragStarted: () {
-          Haptics.selection();
-          onDragStarted();
-        },
-        onDragEnd: (_) => onDragEnd(),
-        onDraggableCanceled: (_, _) => onDragEnd(),
-        onDragCompleted: onDragEnd,
-        feedback: _DragChip(day: day, tag: tag),
-        childWhenDragging: const _EmptySlot(),
-        child: content,
-      );
-    }
+    // A long-press-drag, not a tap. The tap path below it still goes through
+    // Pressable for the press-scale and haptic.
+    return GestureDetector( // interactivity-ok
+      behavior: HitTestBehavior.opaque,
+      onLongPressStart: (_) => _open(),
+      onLongPressMoveUpdate: (d) => _track(d.globalPosition),
+      onLongPressEnd: (_) => _close(commit: true),
+      onLongPressCancel: () => _close(),
+      child: Pressable(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: cell,
+      ),
+    );
+  }
+}
 
-    // Locked days recede so the legal drop zone reads as one shape.
-    if (dragging && !isOrigin && !canDropOn) {
-      content = Opacity(opacity: 0.35, child: content);
-    }
-    return content;
+/// The row of sessions, floated above the calendar. Purely presentational —
+/// hit-testing happens in _CalendarDayState against the rects reported here,
+/// so the finger keeps driving the gesture it started on the chip.
+class _DayPickerOverlay extends StatelessWidget {
+  final List<({ProgramDayOptionV2? opt, String tag})> choices;
+  final int hot;
+  final Rect anchor;
+  final Size screen;
+  final void Function(List<Rect>) onLaidOut;
+  const _DayPickerOverlay({
+    required this.choices,
+    required this.hot,
+    required this.anchor,
+    required this.screen,
+    required this.onLaidOut,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const pillW = 62.0, pillH = 40.0, gap = 6.0, pad = 8.0;
+    final w = choices.length * pillW + (choices.length - 1) * gap + pad * 2;
+    // Centred on the chip, then pushed back inside the screen — Sunday's chip
+    // sits at the right edge and would otherwise hang off it.
+    var left = anchor.center.dx - w / 2;
+    left = left.clamp(8.0, (screen.width - w - 8).clamp(8.0, double.infinity));
+    // Above the chip by preference; below it if there is no room up there.
+    final above = anchor.top - pillH - 18;
+    final top = above < 8 ? anchor.bottom + 10 : above;
+
+    final rects = <Rect>[
+      for (var i = 0; i < choices.length; i++)
+        Rect.fromLTWH(left + pad + i * (pillW + gap), top + pad, pillW, pillH),
+    ];
+    WidgetsBinding.instance.addPostFrameCallback((_) => onLaidOut(rects));
+
+    return Positioned(
+      left: left,
+      top: top,
+      child: Material(
+        color: Colors.transparent,
+        child: Container(
+          padding: const EdgeInsets.all(pad),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceRaised,
+            border: Border.all(color: AppColors.borderStrong),
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  blurRadius: 22,
+                  offset: const Offset(0, 8)),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < choices.length; i++) ...[
+                if (i > 0) const SizedBox(width: gap),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 90),
+                  width: pillW,
+                  height: pillH,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: i == hot ? AppColors.accent : AppColors.surface,
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                  child: Text(choices[i].tag,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontFamily: AppTheme.fontFamily,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 10.5,
+                          letterSpacing: 0.4,
+                          color: i == hot
+                              ? AppColors.onAccent
+                              : AppColors.textSecondary)),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -1066,95 +1268,6 @@ class _DayCell extends StatelessWidget {
 }
 
 /// The dashed hole a dragged chip leaves behind at its origin.
-class _EmptySlot extends StatelessWidget {
-  const _EmptySlot();
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _DashedRRectPainter(color: AppColors.borderStrong, radius: 12),
-      child: Container(
-        width: double.infinity,
-        height: 51,
-        decoration: BoxDecoration(
-          color: AppColors.surfaceSunken,
-          borderRadius: BorderRadius.circular(12),
-        ),
-      ),
-    );
-  }
-}
-
-/// The floating chip that follows the pointer during a drag, with a lime badge
-/// naming the session so the gesture reads clearly.
-class _DragChip extends StatelessWidget {
-  final WeekDayV2 day;
-  final String tag;
-  const _DragChip({required this.day, required this.tag});
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 52,
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceRaised,
-              borderRadius: BorderRadius.circular(15),
-              border: Border.all(color: AppColors.accent, width: 1.5),
-              boxShadow: const [
-                BoxShadow(color: Color(0xA60A0908), blurRadius: 30, offset: Offset(0, 14)),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('${day.date.day}',
-                    style: const TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 16,
-                        height: 1,
-                        color: AppColors.textPrimary)),
-                const SizedBox(height: 4),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                  decoration: BoxDecoration(
-                      color: AppColors.accent.withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(5)),
-                  child: Text(tag,
-                      style: const TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 7,
-                          letterSpacing: 0.3,
-                          color: AppColors.accent)),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 5),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-                color: AppColors.accent, borderRadius: BorderRadius.circular(9)),
-            child: Text(day.label ?? 'Session',
-                style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 9,
-                    color: AppColors.onAccent)),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Confirmation for a day swap: the before → after, then the scope. Pops
-/// 'week' / 'forever', or null for "leave it".
 class _MoveSheet extends StatelessWidget {
   final WeekDayV2 from;
   final WeekDayV2 to;

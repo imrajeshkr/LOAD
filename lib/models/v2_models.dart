@@ -312,6 +312,25 @@ class TrainScreenV2 {
       );
 }
 
+/// One choice in the day picker: a session the active program can schedule.
+class ProgramDayOptionV2 {
+  final String id;
+  final int ordinal;
+  final String label; // "Push Day"
+  const ProgramDayOptionV2({
+    required this.id,
+    required this.ordinal,
+    required this.label,
+  });
+
+  factory ProgramDayOptionV2.fromJson(Map<String, dynamic> j) =>
+      ProgramDayOptionV2(
+        id: j['id'] as String,
+        ordinal: (j['ordinal'] as num).toInt(),
+        label: (j['label'] as String?) ?? '',
+      );
+}
+
 class WeekDayV2 {
   final DateTime date;
   final int dow; // 1=Mon..7=Sun

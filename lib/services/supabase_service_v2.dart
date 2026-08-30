@@ -48,6 +48,27 @@ extension SupabaseServiceV2 on SupabaseService {
     });
   }
 
+  /// Set one day to a session, or to rest (`programDayId == null`).
+  ///
+  /// Deliberately not a swap: it changes that day and leaves every other day
+  /// alone. Rest drops the day's session rather than relocating it.
+  Future<void> setDaySession(DateTime date, String? programDayId) async {
+    await client.rpc('set_day_session', params: {
+      'p_date': _dateStr(date),
+      'p_program_day_id': programDayId,
+    });
+  }
+
+  /// Every session the active program can put on a day, in rotation order.
+  /// Empty when there is no active program.
+  Future<List<ProgramDayOptionV2>> fetchProgramDays() async {
+    final rows = await client.rpc('my_program_days');
+    return ((rows as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .map(ProgramDayOptionV2.fromJson)
+        .toList();
+  }
+
   /// "Make it the plan": persist a session's reordered lifts to today's program
   /// day so future sessions present the new order. [exerciseIds] in order.
   Future<void> reorderMyDay(List<String> exerciseIds) async {
