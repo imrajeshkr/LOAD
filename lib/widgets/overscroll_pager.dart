@@ -1,4 +1,6 @@
 import 'dart:math' as math;
+import 'dart:ui' show lerpDouble;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
@@ -61,7 +63,7 @@ class _OverscrollPagerState extends State<OverscrollPager>
     with SingleTickerProviderStateMixin {
   late final AnimationController _anim = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 240),
+    duration: const Duration(milliseconds: 320),
   )..addListener(() => setState(() {}));
 
   /// Signed pull in logical pixels. Positive = dragging the NEXT lift up.
@@ -103,7 +105,15 @@ class _OverscrollPagerState extends State<OverscrollPager>
   bool get _canNext => widget.index < widget.count - 1;
   bool get _canPrev => widget.index > 0;
 
-  double get _offset => _anim.isAnimating ? _drag * (1 - _anim.value) : _drag;
+  /// Where the animation runs from and to. Used for both outcomes: springing
+  /// back to 0, and carrying the page the rest of the way to ±h.
+  double _from = 0;
+  double _to = 0;
+  bool _sliding = false;
+
+  double get _offset => _sliding
+      ? lerpDouble(_from, _to, Curves.easeOutCubic.transform(_anim.value))!
+      : _drag;
 
   void _settle(double height) {
     final threshold = height * widget.snapFraction;
@@ -111,21 +121,30 @@ class _OverscrollPagerState extends State<OverscrollPager>
     final goPrev = _userDrag < -threshold && _canPrev;
     _userDrag = 0;
     _accum = 0;
-    _armed = false;
 
+    // Either outcome is an animation now. Committing used to swap the index
+    // on the spot, which read as the page being replaced rather than arriving
+    // — the pull did all the work and then the last part of the journey
+    // happened instantly.
+    _from = _drag;
+    _to = goNext ? height : (goPrev ? -height : 0);
+    _sliding = true;
     if (goNext || goPrev) {
       // The thud of a thing landing. Heavier than the tick that armed it,
       // because arriving is a bigger event than becoming able to arrive.
       Haptics.success();
-      widget.onPage(widget.index + (goNext ? 1 : -1));
-      _drag = 0;
-      _anim.value = 0;
-      if (mounted) setState(() {});
-      return;
     }
-    // Short of the threshold: spring back, nothing changed.
+    setState(() {});
+
     _anim.forward(from: 0).whenComplete(() {
+      // The swap happens with the incoming page already filling the viewport,
+      // so resetting the offset in the same frame is invisible.
+      if (goNext || goPrev) widget.onPage(widget.index + (goNext ? 1 : -1));
+      _sliding = false;
+      _armed = false;
       _drag = 0;
+      _from = 0;
+      _to = 0;
       _anim.value = 0;
       if (mounted) setState(() {});
     });
@@ -143,6 +162,10 @@ class _OverscrollPagerState extends State<OverscrollPager>
           child: NotificationListener<ScrollNotification>(
           onNotification: (n) {
             if (n.metrics.axis != Axis.vertical) return false;
+            // Mid-slide the page is ours, not the list's. Without this the
+            // ScrollEnd that arrives during the animation re-enters _settle
+            // with _drag still set and starts a second one.
+            if (_sliding) return false;
             final m = n.metrics;
 
             if (n is ScrollStartNotification) {
@@ -210,11 +233,19 @@ class _OverscrollPagerState extends State<OverscrollPager>
             }
             return false;
           },
-          child: Stack(
+          // Clipped, and every page pinned to the viewport. Without the
+          // SizedBox the outgoing page laid out at its own height inside the
+          // Stack, so dragging stretched the area it occupied and left a void
+          // under it — the "laggy" growing box.
+          child: ClipRect(
+            child: Stack(
             children: [
               Transform.translate(
                 offset: Offset(0, -o),
-                child: widget.builder(context, widget.index),
+                child: SizedBox(
+                  height: h,
+                  child: widget.builder(context, widget.index),
+                ),
               ),
               if (o > 0 && _canNext)
                 Transform.translate(
@@ -237,6 +268,7 @@ class _OverscrollPagerState extends State<OverscrollPager>
                   ),
                 ),
             ],
+          ),
           ),
           ),
         );

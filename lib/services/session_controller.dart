@@ -330,8 +330,13 @@ class SessionController extends ChangeNotifier {
   /// set, or never (Profile's "Ask how the set felt").
   Future<void> logSet() async {
     final e = ex;
-    final st = planned.at(_sets[idx].length);
+    final logAt = _sets[idx].length;
+    final st = planned.at(logAt);
     _sets[idx].add(SetRow(e.isBodyweight ? null : st.$1, st.$2));
+    // What was actually lifted becomes the default for the rows below it —
+    // fillRemaining deliberately does not, since it is already consuming the
+    // per-row values on its way through.
+    planned.carryFrom(logAt, st.$1, st.$2);
     _entry[idx] = EntryModeV2.live;
     cuesOpen = false;
 
