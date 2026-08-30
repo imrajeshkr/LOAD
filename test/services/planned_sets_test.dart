@@ -57,7 +57,7 @@ void main() {
     expect(p.length, 3);
   });
 
-  test('half-kilo steps stay on a quarter-kilo grid', () {
+  test('every weight lands on a half kilo, whatever it started as', () {
     // Twenty raw additions of 0.5 lands on 22.500000000000004. That formats
     // fine and compares wrong, which is the worst combination.
     final p = PlannedSets.seed(count: 1, kg: 20, reps: 8);

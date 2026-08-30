@@ -35,9 +35,11 @@ class PlannedSets {
   /// (a logged set with zero reps is not a set).
   void adjust(int n, {double dKg = 0, int dReps = 0}) {
     if (n < 0 || n >= _kg.length) return;
-    // Snapped to a quarter kilo. Half-kilo steps accumulate binary error —
-    // twenty additions of 0.5 lands on 22.500000000000004, which formats fine
-    // today and compares wrong forever.
+    // Snapped to a half kilo — the finest thing anyone can actually load, and
+    // the grid the whole app promises. A quarter-kilo grid was worse than
+    // useless: it let 10.25 exist, which renders as "10.3" and reads as a
+    // rounding bug. Snapping also absorbs binary drift, which matters because
+    // twenty raw additions of 0.5 land on 22.500000000000004.
     _kg[n] = _snap((_kg[n] + dKg).clamp(0, 999).toDouble());
     _reps[n] = (_reps[n] + dReps).clamp(1, 100);
     _touched.add(n);
@@ -51,7 +53,7 @@ class PlannedSets {
   /// True when this row has been set by hand rather than inherited.
   bool isTouched(int n) => _touched.contains(n);
 
-  static double _snap(double kg) => (kg * 4).round() / 4;
+  static double _snap(double kg) => (kg * 2).round() / 2;
 
   /// Extend to [count] rows, carrying the last row's values forward — a lifter
   /// adding a fourth set almost always wants what they just did.

@@ -1611,9 +1611,9 @@ class _ReviewRowState extends State<_ReviewRow> {
   }
 
   void _adjustWeight(int i, double d) {
-    // Snapped like PlannedSets.adjust — half-kilo steps drift otherwise.
+    // Snapped like PlannedSets.adjust — same half-kilo grid, same reason.
     setState(() => _rows[i].kg =
-        ((((_rows[i].kg ?? 0) + d).clamp(0, 500)) * 4).round() / 4);
+        ((((_rows[i].kg ?? 0) + d).clamp(0, 500)) * 2).round() / 2);
   }
 
   void _adjustReps(int i, int d) {
