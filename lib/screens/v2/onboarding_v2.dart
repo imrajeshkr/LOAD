@@ -45,8 +45,10 @@ class _OnboardingV2State extends State<OnboardingV2> {
   bool _metric = true;
   double _bw = 80;
   double _heightCm = 170;
-  String? _targetMode; // lose | same | gain | none
-  double _target = 76;
+  /// Null until the lifter overrides the direction BMI implies. Asking
+  /// someone to pick a direction they have already told us — by giving a
+  /// height and a weight — is a question with an answer already in it.
+  String? _dirOverride; // lose | same | gain
   final List<int> _weekdays = [1, 3, 5]; // ISO
   String? _split; // full_body | upper_lower | push_pull_legs
   String? _experience; // beginner | intermediate | advanced
@@ -65,6 +67,20 @@ class _OnboardingV2State extends State<OnboardingV2> {
   // ── derived ───────────────────────────────────────────────────────────────
   String get _stepId => _steps[_step];
   int get _dayCount => _weekdays.length;
+
+  double get _bmi =>
+      _heightCm > 0 ? _bw / ((_heightCm / 100) * (_heightCm / 100)) : 0;
+
+  /// The bands the BMI meter already draws (WHO Asian cut-points), read as a
+  /// direction. Under is the only case that argues for gaining.
+  String get _targetMode =>
+      _dirOverride ?? (_bmi < 18.5 ? 'gain' : _bmi < 23 ? 'same' : 'lose');
+
+  double get _target => switch (_targetMode) {
+        'lose' => (_bw - 4).clamp(35, 180),
+        'gain' => (_bw + 4).clamp(35, 180),
+        _ => _bw,
+      };
 
   int _disp(double kg) => _metric ? kg.round() : (kg * 2.2046).round();
 
@@ -90,7 +106,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   bool get _canAdvance => switch (_stepId) {
         'goal' => _goals.isNotEmpty || _coachChoice,
-        'body' => _targetMode != null,
+        'body' => true,
         'days' => _dayCount > 0 && _split != null,
         'setup' => _experience != null && _environment != null,
         _ => true,
@@ -104,9 +120,8 @@ class _OnboardingV2State extends State<OnboardingV2> {
         if (_goals.length == 1) return 'Good. Everything downstream bends toward ${_goals.first.label.toLowerCase()}.';
         return '${_goals.first.label.toLowerCase()} leads, the rest ride along.';
       case 'body':
-        if (_targetMode == null) return 'Where should this go?';
-        if (_targetMode == 'none') return "No target. I'll just show you the trend.";
-        return 'Target noted. Roughly ${(_bw - _target).abs().round()} kg of change at a sane pace.';
+        if (_targetMode == 'same') return 'Holding steady. I will train you to recomposition.';
+        return 'Roughly ${(_bw - _target).abs().round()} kg to ${_targetMode == 'lose' ? 'lose' : 'gain'}, at a sane pace.';
       case 'days':
         if (_dayCount == 0) return 'Pick at least one. Even one real day beats a perfect plan you skip.';
         return '$_dayCount days means I can give you ${_dayCount >= 4 ? 'a proper split' : 'full-body sessions'}.';
@@ -158,9 +173,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         'same' => 'maintain',
         _ => 'declined',
       },
-      targetWeightKg: (_targetMode == 'lose' || _targetMode == 'gain')
-          ? _target
-          : (_targetMode == 'same' ? _bw : null),
+      targetWeightKg: _target,
       weekdaysIso: List.of(_weekdays)..sort(),
       splitPreference: _split ?? 'full_body',
       experience: _experience ?? 'beginner',
@@ -795,48 +808,22 @@ class _OnboardingV2State extends State<OnboardingV2> {
           ),
           const SizedBox(height: 10),
           BmiBand(bmi: bmi),
-          const SizedBox(height: 8),
-          const Text('Muscle counts the same as fat here — read it as a rough guide.',
-              style: TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 10.5,
-                  height: 1.4,
-                  color: AppColors.textFaint)),
         ],
       ),
     );
   }
 
+  /// The direction, arrived at pre-selected. "No target" is gone: it opted a
+  /// lifter out of the one number the plan is allowed to move, and every
+  /// answer it produced was one the height and weight already gave.
   Widget _targetCard() {
-    return Column(
+    return Row(
       children: [
-        Row(
-          children: [
-            Expanded(child: _dirTile('Lose', Icons.trending_down_rounded, 'lose')),
-            const SizedBox(width: 9),
-            Expanded(child: _dirTile('Stay', Icons.trending_flat_rounded, 'same')),
-            const SizedBox(width: 9),
-            Expanded(child: _dirTile('Gain', Icons.trending_up_rounded, 'gain')),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Pressable(
-          haptic: PressFx.light,
-          onTap: () => setState(() {
-            _targetMode = 'none';
-            _target = _bw;
-          }),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Text('No target',
-                style: TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontSize: 11.5,
-                    color: _targetMode == 'none'
-                        ? AppColors.accent
-                        : AppColors.textFaint)),
-          ),
-        ),
+        Expanded(child: _dirTile('Lose', Icons.trending_down_rounded, 'lose')),
+        const SizedBox(width: 9),
+        Expanded(child: _dirTile('Stay', Icons.trending_flat_rounded, 'same')),
+        const SizedBox(width: 9),
+        Expanded(child: _dirTile('Gain', Icons.trending_up_rounded, 'gain')),
       ],
     );
   }
@@ -845,14 +832,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
     final sel = _targetMode == mode;
     return Pressable(
       haptic: PressFx.light,
-      onTap: () => setState(() {
-        _targetMode = mode;
-        _target = switch (mode) {
-          'lose' => (_bw - 4).clamp(35, 180),
-          'gain' => (_bw + 4).clamp(35, 180),
-          _ => _bw,
-        };
-      }),
+      onTap: () => setState(() => _dirOverride = mode),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 14),
         decoration: BoxDecoration(
@@ -1097,9 +1077,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
       (label: 'Bodyweight', value: '${_disp(_bw)} ${_metric ? 'kg' : 'lb'}', step: _steps.indexOf('body'), icon: Icons.monitor_weight_outlined, span: 1, warm: false),
       (
         label: 'Target',
-        value: (_targetMode == 'none' || _targetMode == null)
-            ? 'None'
-            : '${_disp(_target)} ${_metric ? 'kg' : 'lb'}',
+        value: '${_disp(_target)} ${_metric ? 'kg' : 'lb'}',
         step: _steps.indexOf('body'),
         icon: Icons.flag_circle_outlined,
         span: 1,

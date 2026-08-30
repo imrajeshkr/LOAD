@@ -8,6 +8,7 @@ import '../../services/session_controller.dart';
 import '../../services/haptics.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/pressable.dart';
+import 'exercise_guide_sheet.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/v2_widgets.dart';
 import 'session_flow_screen.dart';
@@ -37,7 +38,6 @@ class TrainTab extends StatefulWidget {
 class _TrainTabState extends State<TrainTab> {
   TrainScreenV2? _plan;
   SessionSummaryV2? _summary;
-  MorningNoteV2? _note;
   BodyFuelV2? _fuel;
   List<ProgressionV2> _progressions = const [];
   String? _error;
@@ -79,7 +79,6 @@ class _TrainTabState extends State<TrainTab> {
 
       final results = await Future.wait([
         svc.fetchBodyFuel(),
-        svc.fetchMorningNote(),
         if (completed) svc.fetchSessionSummary(plan!.sessionId!),
         if (completed) svc.fetchProgressions(),
       ]);
@@ -87,14 +86,10 @@ class _TrainTabState extends State<TrainTab> {
       setState(() {
         _plan = plan;
         _fuel = results[0] as BodyFuelV2;
-        _note = results[1] as MorningNoteV2?;
-        _summary = completed ? results[2] as SessionSummaryV2? : null;
-        _progressions = completed ? results[3] as List<ProgressionV2> : const [];
+        _summary = completed ? results[1] as SessionSummaryV2? : null;
+        _progressions = completed ? results[2] as List<ProgressionV2> : const [];
         _loading = false;
       });
-      // Surfacing the note counts as reading it.
-      final note = _note;
-      if (note != null && note.readAt == null) svc.markNoteRead(note.id);
       // Keep the calendar rolling ~5 weeks ahead. Fire-and-forget: today and
       // the near term already exist, so this load never waits on it.
       svc.ensureSchedule();
@@ -465,10 +460,6 @@ class _TrainTabState extends State<TrainTab> {
 
   // ── BEFORE: training day ──────────────────────────────────────────────────
   List<Widget> _beforeState(TrainScreenV2 plan) => [
-        if (_note != null) ...[
-          _MorningNoteCard(note: _note!),
-          const SizedBox(height: 16),
-        ],
         _PlanList(
           plan: plan,
           onSwap: _openSwap,
@@ -488,10 +479,6 @@ class _TrainTabState extends State<TrainTab> {
   // ── BEFORE: rest day ──────────────────────────────────────────────────────
   List<Widget> _restState(TrainScreenV2 plan) => [
         const _RestCard(),
-        if (_note != null) ...[
-          const SizedBox(height: 16),
-          _MorningNoteCard(note: _note!),
-        ],
         if (plan.upcoming.isNotEmpty) ...[
           const SizedBox(height: 16),
           _UpcomingCard(next: plan.upcoming.first, lead: 'Then'),
@@ -1599,62 +1586,6 @@ class _DashedRRectPainter extends CustomPainter {
 // BEFORE-state widgets
 // ════════════════════════════════════════════════════════════════════════
 
-class _MorningNoteCard extends StatelessWidget {
-  final MorningNoteV2 note;
-  const _MorningNoteCard({required this.note});
-
-  @override
-  Widget build(BuildContext context) {
-    return V2Card(
-      color: AppColors.surfaceRaised,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(Icons.bolt_rounded, size: 16, color: AppColors.accent),
-              const SizedBox(width: 6),
-              const Text('From your trainer',
-                  style: TextStyle(
-                      fontFamily: AppTheme.fontFamily,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 12,
-                      letterSpacing: 0.3,
-                      color: AppColors.textPrimary)),
-              const Spacer(),
-              Text(_fmtTime(note.createdAt),
-                  style: const TextStyle(
-                      fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
-              if (note.pinned) ...[
-                const SizedBox(width: 6),
-                const Icon(Icons.push_pin_rounded, size: 13, color: AppColors.textMuted),
-              ],
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(note.content,
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 14,
-                  height: 1.45,
-                  color: AppColors.textSecondary)),
-          if (note.receipts.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final r in note.receipts)
-                  StatusChip(icon: _iconFor(r.icon), label: r.label, color: AppColors.textMuted),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
 class _PlanList extends StatelessWidget {
   final TrainScreenV2 plan;
   final void Function(PlanExerciseV2 ex)? onSwap;
@@ -1668,7 +1599,10 @@ class _PlanList extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('${plan.exercises.length} exercises',
+        // Every row used to repeat its own sets and rest. Three lines that
+        // each answered a fraction of one question — how much work is this?
+        // Answered once, for the whole session, in the place you ask it.
+        Text(_sessionShape(plan),
             style: const TextStyle(
                 fontFamily: AppTheme.fontFamily,
                 fontWeight: FontWeight.w700,
@@ -1677,7 +1611,11 @@ class _PlanList extends StatelessWidget {
                 color: AppColors.textMuted)),
         const SizedBox(height: 10),
         for (final e in plan.exercises) ...[
-          _PlanRow(ex: e, onSwap: onSwap == null ? null : () => onSwap!(e)),
+          _PlanRow(
+            ex: e,
+            onSwap: onSwap == null ? null : () => onSwap!(e),
+            onOpen: () => showExerciseGuide(context, e),
+          ),
           const SizedBox(height: 8),
         ],
         if (onAdd != null) _AddExerciseRow(onTap: onAdd!),
@@ -1758,12 +1696,21 @@ class _StartSessionBar extends StatelessWidget {
   }
 }
 
+/// A lift, before the session starts: what it is, and what you will lift.
+///
+/// It used to carry `4 × 6–12 · 2 min rest` under the name and open the swap
+/// sheet when tapped — a whole row whose only gesture replaced the thing you
+/// tapped. Neither served the common case, which is "what even is a Lateral
+/// Raise". Tapping the row now opens the guide; swapping is its own button,
+/// so the destructive action needs a deliberate aim rather than inheriting
+/// the largest tap target on screen.
 class _PlanRow extends StatelessWidget {
   final PlanExerciseV2 ex;
   /// Null once the session is under way — swapping a lift mid-session would
   /// orphan the sets already logged against it.
   final VoidCallback? onSwap;
-  const _PlanRow({required this.ex, this.onSwap});
+  final VoidCallback onOpen;
+  const _PlanRow({required this.ex, required this.onOpen, this.onSwap});
 
   @override
   Widget build(BuildContext context) {
@@ -1789,7 +1736,7 @@ class _PlanRow extends StatelessWidget {
                 ),
               ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
+              padding: const EdgeInsets.fromLTRB(15, 11, 11, 11),
               child: Row(
                 children: [
                   Expanded(
@@ -1826,10 +1773,6 @@ class _PlanRow extends StatelessWidget {
                             ],
                           ],
                         ),
-                        const SizedBox(height: 2),
-                        Text('${ex.prescription}  ·  ${(ex.restSeconds / 60).round()} min rest',
-                            style: const TextStyle(
-                                fontFamily: AppTheme.fontFamily, fontSize: 11, color: AppColors.textMuted)),
                       ],
                     ),
                   ),
@@ -1839,13 +1782,29 @@ class _PlanRow extends StatelessWidget {
                           fontWeight: FontWeight.w700,
                           fontSize: 13,
                           color: AppColors.accent)),
-                  // Marks the row as replaceable, not merely tappable — a
-                  // gesture nobody finds is not a feature.
+                  // Its own target, and drawn as one. Sharing the row's tap
+                  // with the guide would make "replace this lift" the thing
+                  // that happens when someone is only curious.
                   if (onSwap != null) ...[
-                    const SizedBox(width: 8),
-                    const Icon(Icons.swap_horiz_rounded,
-                        size: 16, color: AppColors.textFaint),
-                  ],
+                    const SizedBox(width: 6),
+                    Pressable(
+                      haptic: PressFx.light,
+                      onTap: onSwap,
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceRaised,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppColors.border),
+                        ),
+                        child: const Icon(Icons.swap_horiz_rounded,
+                            size: 16, color: AppColors.textMuted),
+                      ),
+                    ),
+                  ] else
+                    const SizedBox(width: 2),
                 ],
               ),
             ),
@@ -1854,10 +1813,9 @@ class _PlanRow extends StatelessWidget {
       ),
     );
 
-    // Not tappable during a live session: swapping a lift you have already
-    // logged sets against would orphan them.
-    if (onSwap == null) return row;
-    return Pressable(haptic: PressFx.light, onTap: onSwap, child: row);
+    // The guide is always available, session under way or not — knowing what
+    // a lift is never stops being useful.
+    return Pressable(haptic: PressFx.light, onTap: onOpen, child: row);
   }
 }
 
@@ -2914,23 +2872,17 @@ String _weekdayLong(DateTime d) => _weekdaysLong[(d.weekday - 1).clamp(0, 6)];
 String _fmtDate(DateTime d) => '${_weekdayShort(d)} ${d.day} ${_months[d.month - 1]}';
 String _fmtDayMonth(DateTime d) => '${d.day} ${_months[d.month - 1]}';
 
-String _fmtTime(DateTime dt) {
-  final local = dt.toLocal();
-  final h = local.hour % 12 == 0 ? 12 : local.hour % 12;
-  final m = local.minute.toString().padLeft(2, '0');
-  return '$h:$m ${local.hour < 12 ? 'am' : 'pm'}';
+/// "3 exercises · 11 sets · about 40 min".
+///
+/// The duration is sets × (a working set + its rest), which is what actually
+/// fills a session. It is deliberately rounded to five minutes: a number to
+/// the minute would claim a precision the estimate does not have.
+String _sessionShape(TrainScreenV2 plan) {
+  final ex = plan.exercises;
+  final sets = ex.fold<int>(0, (n, e) => n + e.setsTarget);
+  final seconds =
+      ex.fold<int>(0, (n, e) => n + e.setsTarget * (e.restSeconds + 40));
+  final mins = (seconds / 60 / 5).round() * 5;
+  final unit = ex.length == 1 ? 'exercise' : 'exercises';
+  return '${ex.length} $unit  ·  $sets sets  ·  about $mins min';
 }
-
-/// Maps the Material icon names the coach stores as strings to Flutter glyphs.
-IconData _iconFor(String name) => switch (name) {
-      'history' => Icons.history_rounded,
-      'healing' => Icons.healing_rounded,
-      'local_fire_department' => Icons.local_fire_department_rounded,
-      'fitness_center' => Icons.fitness_center_rounded,
-      'calendar_month' => Icons.calendar_month_rounded,
-      'trending_flat' => Icons.trending_flat_rounded,
-      'bolt' => Icons.bolt_rounded,
-      'check' => Icons.check_rounded,
-      'straighten' => Icons.straighten_rounded,
-      _ => Icons.check_rounded,
-    };
