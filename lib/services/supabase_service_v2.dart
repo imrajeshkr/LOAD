@@ -1131,6 +1131,15 @@ extension SupabaseServiceV2 on SupabaseService {
       },
     });
 
+    // Height lives on `profiles`, not with the weigh-ins: it is an attribute
+    // of the person rather than something that trends. Written directly
+    // because profiles' own RLS already scopes updates to the owner.
+    if (d.heightCm != null) {
+      await client
+          .from('profiles')
+          .update({'height_cm': d.heightCm}).eq('id', uid);
+    }
+
     // First weigh-in (the onboarding number is the first body_measurement).
     // Already idempotent via upsert.
     await client.from('body_measurements').upsert({

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import '../../widgets/ruler_picker.dart';
 import '../../models/v2_models.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
@@ -71,6 +72,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
   bool _coachChoice = false;
   bool _metric = true;
   double _bw = 80;
+  double _heightCm = 170;
   String? _targetMode; // lose | same | gain | none
   double _target = 76;
   final List<int> _weekdays = [1, 3, 5]; // ISO
@@ -150,7 +152,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         if (_goals.length == 1) return 'Good. Everything downstream bends toward ${_goals.first.label.toLowerCase()}.';
         return '${_goals.first.label.toLowerCase()} leads, the rest ride along.';
       case 'body':
-        if (_targetMode == null) return "Set a target or tell me you don't want one — I won't pick silently.";
+        if (_targetMode == null) return 'Where should this go?';
         if (_targetMode == 'none') return "No target. I'll just show you the trend.";
         return 'Target noted. Roughly ${(_bw - _target).abs().round()} kg of change at a sane pace.';
       case 'days':
@@ -199,6 +201,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
       coachChoice: _coachChoice,
       metric: _metric,
       bodyweightKg: _bw,
+      heightCm: _heightCm,
       targetDirection: switch (_targetMode) {
         'lose' => 'lose',
         'gain' => 'gain',
@@ -478,7 +481,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   (String, String) _titleFor(String id) => switch (id) {
         'goal' => ('What are we chasing?', ''),
-        'body' => ('Where are you starting?', 'Drag for the rough number, tap ± to land it exactly.'),
+        'body' => ('Where are you starting?', ''),
         'days' => ('Which days are yours?', 'Tap the days you can actually show up. Be honest, not ambitious.'),
         'experience' => ('How long have you trained?', 'Not a label — it just tells me how fast to add weight and how much work you can recover from.'),
         'place' => ('Where do you train?', 'This decides which equipment I am allowed to program. I will never put a machine in your plan that you cannot reach.'),
@@ -708,198 +711,275 @@ class _OnboardingV2State extends State<OnboardingV2> {
   }
 
   Widget _bodyStep() {
+    final bmi = _heightCm > 0 ? _bw / ((_heightCm / 100) * (_heightCm / 100)) : 0.0;
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _unitToggle(),
-        const SizedBox(height: 22),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            _circleBtn(Icons.remove, () => setState(() => _bw = (_bw - 1).clamp(40, 160))),
-            SizedBox(
-              width: 130,
-              child: Column(
-                children: [
-                  Text('${_disp(_bw)}',
-                      style: const TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 56,
-                          height: 1,
-                          letterSpacing: -1.6,
-                          color: AppColors.accent)),
-                  const SizedBox(height: 5),
-                  Text(_metric ? 'kg' : 'lb',
-                      style: const TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontSize: 11.5,
-                          color: AppColors.textMuted)),
-                ],
-              ),
-            ),
-            _circleBtn(Icons.add, () => setState(() => _bw = (_bw + 1).clamp(40, 160))),
-          ],
+        Center(child: _unitToggle()),
+        const SizedBox(height: 18),
+        _measure(
+          label: 'Weight',
+          reading: _metric ? '${_disp(_bw)} kg' : '${_disp(_bw * 2.20462)} lb',
+          value: _metric ? _bw : _bw * 2.20462,
+          min: _metric ? 35 : 77,
+          max: _metric ? 180 : 397,
+          step: _metric ? 0.5 : 1,
+          onChanged: (v) => setState(() => _bw = _metric ? v : v / 2.20462),
         ),
-        const SizedBox(height: 8),
-        SliderTheme(
-          data: SliderThemeData(
-            trackHeight: 8,
-            activeTrackColor: AppColors.accent,
-            inactiveTrackColor: AppColors.border,
-            thumbColor: AppColors.accent,
-            overlayShape: SliderComponentShape.noOverlay,
-            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 11),
-          ),
-          child: Slider(
-            min: 40,
-            max: 160,
-            value: _bw,
-            onChanged: (v) => setState(() => _bw = v.roundToDouble()),
-          ),
-        ),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 4),
-          child: Text('drag rough, tap ± exact',
-              style: TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 10.5,
-                  color: AppColors.textDim)),
-        ),
-        const SizedBox(height: 22),
-        _targetCard(),
         const SizedBox(height: 14),
-        _leftAccentBox(
-          title: 'Protein target ${(_bw * 1.8).round()} g a day',
-          body: '1.8 g per kilo of bodyweight — the usual recommendation when you are training to keep or build muscle. It updates with every weigh-in.',
+        _measure(
+          label: 'Height',
+          reading: _metric ? '${_heightCm.round()} cm' : _feetInches(_heightCm),
+          value: _metric ? _heightCm : _heightCm / 2.54,
+          min: _metric ? 130 : 51,
+          max: _metric ? 215 : 85,
+          step: 1,
+          onChanged: (v) => setState(() => _heightCm = _metric ? v : v * 2.54),
         ),
+        const SizedBox(height: 20),
+        _bmiCard(bmi),
+        const SizedBox(height: 14),
+        _targetCard(),
+        const SizedBox(height: 12),
+        _proteinCard(),
       ],
     );
   }
 
-  Widget _targetCard() {
+  /// A reading and the ruler that sets it. The number is the headline; the
+  /// ruler is the control. No caption — the ticks explain themselves.
+  Widget _measure({
+    required String label,
+    required String reading,
+    required double value,
+    required double min,
+    required double max,
+    required double step,
+    required ValueChanged<double> onChanged,
+  }) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+      padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        border: Border.all(
-            color: _targetMode == null
-                ? AppColors.accent.withValues(alpha: 0.4)
-                : AppColors.border),
-        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: AppColors.border),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Where should this number go?',
-              style: TextStyle(
+          Text(label.toUpperCase(),
+              style: const TextStyle(
                   fontFamily: AppTheme.fontFamily,
-                  fontWeight: FontWeight.w500,
-                  fontSize: 12.5,
-                  color: AppColors.textPrimary)),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-                color: AppColors.page, borderRadius: BorderRadius.circular(22)),
-            child: Row(
-              children: [
-                _dirChip('Lose', Icons.trending_down, 'lose'),
-                _dirChip('Stay here', Icons.remove, 'same'),
-                _dirChip('Gain', Icons.trending_up, 'gain'),
-              ],
-            ),
-          ),
-          if (_targetMode == 'lose' || _targetMode == 'gain') ...[
-            const SizedBox(height: 14),
-            Row(
-              children: [
-                _circleBtnSmall(Icons.remove, () => setState(() => _target -= 1)),
-                Expanded(
-                  child: Column(
-                    children: [
-                      Text.rich(TextSpan(children: [
-                        TextSpan(
-                            text: '${_disp(_target)}',
-                            style: const TextStyle(
-                                fontFamily: AppTheme.fontFamily,
-                                fontWeight: FontWeight.w700,
-                                fontSize: 24,
-                                color: AppColors.textPrimary)),
-                        TextSpan(
-                            text: ' ${_metric ? 'kg' : 'lb'}',
-                            style: const TextStyle(
-                                fontFamily: AppTheme.fontFamily,
-                                fontSize: 11,
-                                color: AppColors.textMuted)),
-                      ])),
-                      const SizedBox(height: 4),
-                      Text(
-                          _target == _bw
-                              ? 'same as today'
-                              : '${_target < _bw ? '−' : '+'}${(_disp(_target) - _disp(_bw)).abs()} ${_metric ? 'kg' : 'lb'} from today',
-                          style: const TextStyle(
-                              fontFamily: AppTheme.fontFamily,
-                              fontSize: 10.5,
-                              color: AppColors.textMuted)),
-                    ],
-                  ),
-                ),
-                _circleBtnSmall(Icons.add, () => setState(() => _target += 1)),
-              ],
-            ),
-          ],
-          const SizedBox(height: 12),
-          Center(
-            child: Pressable(
-              onTap: () => setState(() => _targetMode = 'none'),
-              child: Text(
-                  _targetMode == 'none'
-                      ? 'Not chasing a number — tap a direction to change'
-                      : "I'd rather not set a target",
-                  style: TextStyle(
-                      fontFamily: AppTheme.fontFamily,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 11,
-                      color: _targetMode == 'none' ? AppColors.accent : AppColors.textDim)),
-            ),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 9.5,
+                  letterSpacing: 0.9,
+                  color: AppColors.textFaint)),
+          const SizedBox(height: 2),
+          Text(reading,
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 34,
+                  height: 1.15,
+                  letterSpacing: -1,
+                  color: AppColors.accent)),
+          RulerPicker(
+            value: value.clamp(min, max),
+            min: min,
+            max: max,
+            step: step,
+            onChanged: onChanged,
           ),
         ],
       ),
     );
   }
 
-  Widget _dirChip(String label, IconData icon, String mode) {
-    final sel = _targetMode == mode;
-    return Expanded(
-      child: Pressable(
-        onTap: () => setState(() {
-          _targetMode = mode;
-          _target = mode == 'lose' ? _bw - 4 : mode == 'gain' ? _bw + 4 : _bw;
-        }),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 11),
-          decoration: BoxDecoration(
-              color: sel ? AppColors.accent : Colors.transparent,
-              borderRadius: BorderRadius.circular(18)),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+  String _feetInches(double cm) {
+    final total = (cm / 2.54).round();
+    return "${total ~/ 12}'${total % 12}\"";
+  }
+
+  /// BMI as context, not a verdict. The band shows where the number sits; the
+  /// caveat is there because this app is for people building muscle, and
+  /// muscle raises BMI without meaning what the guideline means by it.
+  Widget _bmiCard(double bmi) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border.all(color: AppColors.border),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
             children: [
-              Icon(icon, size: 15, color: sel ? AppColors.onAccent : AppColors.textMuted),
-              const SizedBox(width: 5),
-              Text(label,
-                  style: TextStyle(
+              Text(bmi.toStringAsFixed(1),
+                  style: const TextStyle(
                       fontFamily: AppTheme.fontFamily,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 11.5,
-                      color: sel ? AppColors.onAccent : AppColors.textMuted)),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 26,
+                      height: 1,
+                      letterSpacing: -0.8,
+                      color: AppColors.textPrimary)),
+              const SizedBox(width: 7),
+              Text('BMI · ${BmiBand.label(bmi)}',
+                  style: const TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontSize: 12,
+                      color: AppColors.textMuted)),
             ],
           ),
+          const SizedBox(height: 10),
+          BmiBand(bmi: bmi),
+          const SizedBox(height: 8),
+          const Text('Muscle counts the same as fat here — read it as a rough guide.',
+              style: TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontSize: 10.5,
+                  height: 1.4,
+                  color: AppColors.textFaint)),
+        ],
+      ),
+    );
+  }
+
+  Widget _targetCard() {
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(child: _dirTile('Lose', Icons.trending_down_rounded, 'lose')),
+            const SizedBox(width: 9),
+            Expanded(child: _dirTile('Stay', Icons.trending_flat_rounded, 'same')),
+            const SizedBox(width: 9),
+            Expanded(child: _dirTile('Gain', Icons.trending_up_rounded, 'gain')),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Pressable(
+          haptic: PressFx.light,
+          onTap: () => setState(() {
+            _targetMode = 'none';
+            _target = _bw;
+          }),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text('No target',
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontSize: 11.5,
+                    color: _targetMode == 'none'
+                        ? AppColors.accent
+                        : AppColors.textFaint)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _dirTile(String label, IconData icon, String mode) {
+    final sel = _targetMode == mode;
+    return Pressable(
+      haptic: PressFx.light,
+      onTap: () => setState(() {
+        _targetMode = mode;
+        _target = switch (mode) {
+          'lose' => (_bw - 4).clamp(35, 180),
+          'gain' => (_bw + 4).clamp(35, 180),
+          _ => _bw,
+        };
+      }),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: sel ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
+          border: Border.all(color: sel ? AppColors.accent : AppColors.border),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, size: 21, color: sel ? AppColors.accent : AppColors.textMuted),
+            const SizedBox(height: 6),
+            Text(label,
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 12.5,
+                    color: sel ? AppColors.textPrimary : AppColors.textSecondary)),
+          ],
         ),
       ),
     );
   }
 
-  // ── step: days ──────────────────────────────────────────────────────────
+  /// Protein drawn as the portions it takes to hit, not explained in a
+  /// paragraph. Each block is 30 g — roughly a chicken breast or a scoop.
+  Widget _proteinCard() {
+    final grams = (_bw * 1.8).round();
+    final blocks = (grams / 30).ceil().clamp(1, 9);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 13, 16, 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border.all(color: AppColors.border),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text('$grams g',
+                  style: const TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 22,
+                      height: 1,
+                      color: AppColors.accent)),
+              const SizedBox(width: 7),
+              const Text('protein a day',
+                  style: TextStyle(
+                      fontFamily: AppTheme.fontFamily,
+                      fontSize: 12,
+                      color: AppColors.textMuted)),
+            ],
+          ),
+          const SizedBox(height: 11),
+          Row(
+            children: [
+              for (var i = 0; i < 9; i++) ...[
+                Expanded(
+                  child: Container(
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: i < blocks
+                          ? AppColors.accent.withValues(alpha: 0.85)
+                          : AppColors.surfaceSunken,
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                  ),
+                ),
+                if (i < 8) const SizedBox(width: 4),
+              ],
+            ],
+          ),
+          const SizedBox(height: 7),
+          Text('$blocks portions of about 30 g',
+              style: const TextStyle(
+                  fontFamily: AppTheme.fontFamily,
+                  fontSize: 10.5,
+                  color: AppColors.textFaint)),
+        ],
+      ),
+    );
+  }
+
   Widget _daysStep() {
     const letters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
     return Column(
@@ -1801,29 +1881,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
       ),
     );
   }
-
-  Widget _circleBtn(IconData icon, VoidCallback onTap) => Pressable(
-        onTap: onTap,
-        child: Container(
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-              color: AppColors.surface,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.border)),
-          child: Icon(icon, size: 20, color: AppColors.accent),
-        ),
-      );
-
-  Widget _circleBtnSmall(IconData icon, VoidCallback onTap) => Pressable(
-        onTap: onTap,
-        child: Container(
-          width: 38,
-          height: 38,
-          decoration: const BoxDecoration(color: AppColors.page, shape: BoxShape.circle),
-          child: Icon(icon, size: 18, color: AppColors.textMuted),
-        ),
-      );
 
   Widget _smallRound(IconData icon, VoidCallback onTap) => Pressable(
         onTap: onTap,

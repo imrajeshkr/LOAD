@@ -1177,6 +1177,10 @@ class OnboardingDraft {
   final bool coachChoice;
   final bool metric; // units toggle
   final double bodyweightKg;
+
+  /// Standing height in cm. Used for BMI; null-safe downstream because
+  /// every account created before v2_0056 has none.
+  final double? heightCm;
   final String targetDirection; // lose | maintain | gain | declined
   final double? targetWeightKg;
   final List<int> weekdaysIso; // 1..7
@@ -1198,6 +1202,7 @@ class OnboardingDraft {
     required this.coachChoice,
     required this.metric,
     required this.bodyweightKg,
+    this.heightCm,
     required this.targetDirection,
     required this.targetWeightKg,
     required this.weekdaysIso,
