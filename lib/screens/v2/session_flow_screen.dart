@@ -6,6 +6,7 @@ import '../../services/session_controller.dart';
 import '../../services/haptics.dart';
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
+import '../../services/failure.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/overscroll_pager.dart';
@@ -677,8 +678,15 @@ class _GuideMediaState extends State<_GuideMedia> {
       final path = await SupabaseService.instance.uploadExerciseDemo(
           exerciseId: widget.e.exerciseId, bytes: bytes, ext: ext);
       if (path != null) widget.onDemoPathAdded?.call(path);
-    } catch (_) {
-      // Optional everywhere: a failed upload just leaves the placeholder up.
+    } catch (e, st) {
+      // Optional, not invisible. The identical silent catch here is why a
+      // bucket rejecting every JPEG went unnoticed: the placeholder stayed up
+      // and looked exactly like an exercise that simply had no photo.
+      final f = classifyFailure('session.addPhoto', e, st);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Photo did not upload. ${f.message}')));
+      }
     } finally {
       if (mounted) setState(() => _uploading = false);
     }

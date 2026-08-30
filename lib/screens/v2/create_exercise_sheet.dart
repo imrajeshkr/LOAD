@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../services/supabase_service.dart';
 import '../../services/supabase_service_v2.dart';
+import '../../services/failure.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/pressable.dart';
@@ -132,15 +133,27 @@ class _CreateExerciseSheetState extends State<_CreateExerciseSheet> {
         return;
       }
       final photo = _photoBytes;
+      String? photoProblem;
       if (photo != null) {
         try {
           await svc.uploadExerciseDemo(exerciseId: id, bytes: photo, ext: _photoExt);
-        } catch (_) {
-          // Never fatal: the exercise is saved either way, just without a
-          // photo — same placeholder a catalogue lift with none gets.
+        } catch (e, st) {
+          // Still never fatal — the exercise is saved either way. But no longer
+          // silent: swallowing this hid a bucket that rejected every JPEG for
+          // as long as the feature existed, because nothing on screen or in the
+          // log ever said a photo had not attached.
+          photoProblem = classifyFailure('createExercise.photo', e, st).message;
         }
       }
-      if (mounted) Navigator.of(context).pop(id);
+      if (!mounted) return;
+      // Grabbed before the pop: a messenger looked up from a dead context has
+      // nowhere to put the message.
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.of(context).pop(id);
+      if (photoProblem != null) {
+        messenger.showSnackBar(SnackBar(
+            content: Text('Saved, but the photo did not attach. $photoProblem')));
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
