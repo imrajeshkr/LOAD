@@ -866,7 +866,7 @@ class _WeekCalendarState extends State<_WeekCalendar> {
               const SizedBox(width: 4),
               const Expanded(
                 child: Text(
-                    'Hold a day, slide to change it · tap a day ahead to see it',
+                    'Hold a day, nudge up to change it · tap a day ahead to see it',
                     style: TextStyle(
                         fontFamily: AppTheme.fontFamily,
                         fontSize: 9.5,
@@ -889,12 +889,15 @@ class _WeekCalendarState extends State<_WeekCalendar> {
 /// highlight has to track the finger continuously for the slide to feel like
 /// one motion instead of two taps.
 ///
-/// Selection reads the finger's X only, never its Y. Sliding *onto* the menu
-/// would put the hand over the very options it is choosing between, so the
-/// menu sits above the chip and the finger stays down on the day row, moving
-/// left and right underneath it. The highlighted pill is always the one
-/// directly above the fingertip, so the mapping is still spatial — you just
-/// never have to reach for it.
+/// The two axes do different jobs. Y arms and disarms: nudge up off the chip
+/// and the menu comes live, drop back down and it goes quiet, so backing out
+/// is the same small motion in reverse rather than a separate escape. X picks:
+/// while armed, the pill directly above the fingertip is the one selected.
+///
+/// The finger never travels onto the menu itself. Sliding up *into* it would
+/// put the hand over the options it is choosing between — a twenty-pixel nudge
+/// arms it instead, which keeps the whole row visible under the arch of the
+/// thumb while still reading as "reach toward the menu".
 class _CalendarDay extends StatefulWidget {
   final WeekDayV2 day;
   final String tag;
@@ -933,11 +936,17 @@ class _CalendarDayState extends State<_CalendarDay> {
   Offset _origin = Offset.zero;
   Rect _anchor = Rect.zero;
 
-  /// Nothing is selected until the finger has actually travelled. Because the
-  /// day's current session is no longer offered, there is no safe default to
-  /// land on — so a hold-and-release must mean "never mind", not "commit
-  /// whatever column my thumb happened to be in".
-  bool _moved = false;
+  /// Whether the menu is live. False at rest, so a hold-and-release means
+  /// "never mind" rather than committing whichever column the thumb started
+  /// in — which matters because the day's current session is not offered, so
+  /// there is no harmless default to land on.
+  bool _armed = false;
+
+  /// Nudge up this far to arm; fall back to within this of the start to
+  /// disarm. The gap between the two is hysteresis — without it the menu
+  /// flickers on and off while the finger hovers at the boundary.
+  static const _armAt = -22.0;
+  static const _disarmAt = -10.0;
 
   @override
   void dispose() {
@@ -956,7 +965,7 @@ class _CalendarDayState extends State<_CalendarDay> {
         origin.dx, origin.dy, box.size.width, box.size.height);
     _origin = globalPress;
     _hot = -1;
-    _moved = false;
+    _armed = false;
 
     Haptics.selection();
     widget.onPickerOpen();
@@ -978,25 +987,38 @@ class _CalendarDayState extends State<_CalendarDay> {
 
   void _track(Offset global) {
     if (_entry == null || _slots.isEmpty) return;
-    if (!_moved) {
-      if ((global - _origin).distance < 12) return;
-      _moved = true;
+    final dy = global.dy - _origin.dy;
+
+    final was = _armed;
+    if (!_armed && dy < _armAt) {
+      _armed = true;
+    } else if (_armed && dy > _disarmAt) {
+      _armed = false;
     }
+    if (_armed != was) {
+      // Different textures on purpose, so the two directions are told apart
+      // without looking: a crisp tick going in, a softer thud coming back out.
+      _armed ? Haptics.selection() : Haptics.tap();
+    }
+
     var hit = -1;
-    // Drag well clear of the row and the gesture is abandoned: a deliberate
-    // way out that does not require finding a gap between two pills.
-    if (global.dy < _anchor.bottom + 150) {
+    if (_armed) {
       for (var i = 0; i < _slots.length; i++) {
-        // X only. The finger stays on the day row; the pill above it lights up.
+        // X only. The finger stays below the menu; the pill above it lights up.
         if (global.dx >= _slots[i].left - 3 && global.dx <= _slots[i].right + 3) {
           hit = i;
           break;
         }
       }
     }
+
     if (hit != _hot) {
       _hot = hit;
-      Haptics.selection();
+      // Only when arriving on an option. Leaving one because the finger
+      // dropped out of the menu is already announced by the disarm thud.
+      if (_armed && hit >= 0) Haptics.selection();
+      _entry!.markNeedsBuild();
+    } else if (_armed != was) {
       _entry!.markNeedsBuild();
     }
   }
@@ -1007,7 +1029,7 @@ class _CalendarDayState extends State<_CalendarDay> {
     _entry = null;
     _slots.clear();
     _hot = -1;
-    _moved = false;
+    _armed = false;
     widget.onPickerClose();
     if (!commit || hot < 0 || hot >= widget.choices.length) return;
     final pick = widget.choices[hot];
@@ -1089,11 +1111,18 @@ class _DayPickerOverlay extends StatelessWidget {
       top: top,
       child: Material(
         color: Colors.transparent,
-        child: Container(
+        child: AnimatedOpacity(
+          // Disarmed: nothing under the finger, so lifting cancels. The menu
+          // recedes rather than vanishing, because it has to be obvious that
+          // sliding back up brings it right back.
+          opacity: hot < 0 ? 0.45 : 1,
+          duration: const Duration(milliseconds: 110),
+          child: Container(
           padding: const EdgeInsets.all(pad),
           decoration: BoxDecoration(
             color: AppColors.surfaceRaised,
-            border: Border.all(color: AppColors.borderStrong),
+            border: Border.all(
+                color: hot < 0 ? AppColors.border : AppColors.borderStrong),
             borderRadius: BorderRadius.circular(18),
             boxShadow: [
               BoxShadow(
@@ -1131,6 +1160,7 @@ class _DayPickerOverlay extends StatelessWidget {
               ],
             ],
           ),
+        ),
         ),
       ),
     );
