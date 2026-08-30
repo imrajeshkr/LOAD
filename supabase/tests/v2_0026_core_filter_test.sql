@@ -3,10 +3,25 @@ DO $$
 declare
   v_uid uuid; v_prog uuid; v_ext int; v_above int; v_tot int;
 begin
-  select tp.user_id into v_uid from training_profiles tp
-   where tp.valid_to is null and tp.experience='beginner' limit 1;
-  if v_uid is null then select id into v_uid from profiles limit 1; end if;
+  -- Pick a user that actually HAS a current training profile, deterministically.
+  -- This used to look for an existing beginner and fall back to
+  -- `select id from profiles limit 1` with no ORDER BY. Once no account
+  -- happened to be a beginner, that fallback picked a row at random and
+  -- eventually landed on a signup that never finished onboarding — so the test
+  -- failed with "no current training profile" and looked like a product bug.
+  select tp.user_id into v_uid
+    from training_profiles tp
+    join profiles p on p.id = tp.user_id
+   where tp.valid_to is null
+   order by p.created_at
+   limit 1;
+  if v_uid is null then raise exception 'no account has a training profile'; end if;
   perform set_config('request.jwt.claims', json_build_object('sub', v_uid)::text, true);
+
+  -- Set the training age the assertions below check against, rather than
+  -- hoping some account happens to carry it.
+  update training_profiles set experience = 'beginner'
+   where user_id = v_uid and valid_to is null;
 
   v_prog := bootstrap_user_program(v_uid);
 

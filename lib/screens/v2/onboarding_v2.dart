@@ -21,7 +21,11 @@ class OnboardingV2 extends StatefulWidget {
   State<OnboardingV2> createState() => _OnboardingV2State();
 }
 
-const _steps = ['goal', 'body', 'days', 'experience', 'place', 'bar', 'map', 'review'];
+// 'setup' merges training age and training place: two short questions that
+// each fit a row of three, and that together describe one thing — what this
+// app is allowed to prescribe you. The bench-calibration and injury-map steps
+// were removed; their columns remain in the database.
+const _steps = ['goal', 'body', 'days', 'setup', 'review'];
 
 /// Artwork for the goals the first screen offers. Profile lists all five and
 /// needs none of this — its sheet renders `GoalV2.label` alone.
@@ -29,38 +33,6 @@ const _goalAsset = {
   GoalV2.buildMuscle: 'assets/goals/build-muscle.svg',
   GoalV2.loseFat: 'assets/goals/lose-fat.svg',
   GoalV2.generalHealth: 'assets/goals/stay-consistent.svg',
-};
-
-// Plate catalog for the bench-calibration bar (fixed, not the gym inventory).
-const _plateCatalog = <double>[20, 10, 5, 2.5, 1.25];
-Color _plateColorFor(double p) => switch (p) {
-      20.0 => AppColors.accent,
-      10.0 => AppColors.accentDeep,
-      5.0 => AppColors.textPrimary,
-      2.5 => AppColors.textMuted,
-      _ => AppColors.inactiveFill,
-    };
-
-// Body-map node geometry, matched to the silhouette blocks below (from the
-// design). Each entry is (topPx, dxPx, isLateral) in the 300-tall map; lateral
-// nodes mirror dx to the other side. Keyed by `joints.slug`.
-const _frontGeo = <String, (double, double, bool)>{
-  'neck': (54, 0, false),
-  'shoulder': (72, 31, true),
-  'elbow': (112, 43, true),
-  'wrist': (146, 43, true),
-  'hip': (158, 0, false),
-  'knee': (216, 15, true),
-  'ankle': (264, 15, true),
-};
-const _backGeo = <String, (double, double, bool)>{
-  'neck': (54, 0, false),
-  'upper-back': (86, 0, false),
-  'lumbar': (134, 0, false),
-  'shoulder-blade': (82, 24, true),
-  'glute': (158, 16, true),
-  'hamstring': (206, 15, true),
-  'calf': (250, 15, true),
 };
 
 class _OnboardingV2State extends State<OnboardingV2> {
@@ -79,30 +51,14 @@ class _OnboardingV2State extends State<OnboardingV2> {
   String? _split; // full_body | upper_lower | push_pull_legs
   String? _experience; // beginner | intermediate | advanced
   String? _environment; // commercial_gym | home_gym | bodyweight_only
-  bool _benched = true;
-  double _barKg = 20;
-  final List<double> _plates = [];
-  String _view = 'front';
-  final List<OnboardingFlag> _flags = [];
-  final _painCtrl = TextEditingController();
 
-  List<JointV2> _joints = const [];
   int _build = 0;
   Timer? _buildTimer;
   String? _error;
 
   @override
-  void initState() {
-    super.initState();
-    SupabaseService.instance.fetchJoints().then((j) {
-      if (mounted) setState(() => _joints = j);
-    });
-  }
-
-  @override
   void dispose() {
     _buildTimer?.cancel();
-    _painCtrl.dispose();
     super.dispose();
   }
 
@@ -111,9 +67,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
   int get _dayCount => _weekdays.length;
 
   int _disp(double kg) => _metric ? kg.round() : (kg * 2.2046).round();
-
-  double get _benchTotal =>
-      _plates.fold<double>(_barKg, (n, p) => n + p * 2);
 
   List<(String label, String enumVal, String sub)> get _splitOptions {
     if (_dayCount <= 2) {
@@ -139,8 +92,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         'goal' => _goals.isNotEmpty || _coachChoice,
         'body' => _targetMode != null,
         'days' => _dayCount > 0 && _split != null,
-        'experience' => _experience != null,
-        'place' => _environment != null,
+        'setup' => _experience != null && _environment != null,
         _ => true,
       };
 
@@ -158,13 +110,11 @@ class _OnboardingV2State extends State<OnboardingV2> {
       case 'days':
         if (_dayCount == 0) return 'Pick at least one. Even one real day beats a perfect plan you skip.';
         return '$_dayCount days means I can give you ${_dayCount >= 4 ? 'a proper split' : 'full-body sessions'}.';
-      case 'bar':
-        if (!_benched) return "Nothing to guess then — week one is the bar and the technique.";
-        if (_plates.isNotEmpty) return '${_n(_benchTotal)} kg to start. Every pressing lift scales off this.';
-        return 'Empty bar is a fine answer — ${_n(_barKg)} kg and we build from there.';
-      case 'map':
-        if (_flags.isNotEmpty) return "I'll route around what you flagged and warn you when a lift gets close.";
-        return 'Blank is a great answer here.';
+      case 'setup':
+        if (_experience != null && _environment != null) {
+          return 'That is everything I need to build the week.';
+        }
+        return 'Two taps and the plan knows what it may ask of you.';
       default:
         return 'One tap and you have a week of training.';
     }
@@ -215,11 +165,17 @@ class _OnboardingV2State extends State<OnboardingV2> {
       splitPreference: _split ?? 'full_body',
       experience: _experience ?? 'beginner',
       environment: _environment ?? 'commercial_gym',
-      barWeightKg: _barKg,
-      hasBenched: _benched,
-      benchStartKg: _benchTotal,
-      flags: List.of(_flags),
-      otherPain: _painCtrl.text,
+      // Nothing asks for these any more. A standard bar and "never benched"
+      // are the conservative reading: empty bar on barbell work, 40% of the
+      // catalogue default elsewhere. Linear progression closes that in a
+      // session or two, where guessing high would have someone fail set one.
+      barWeightKg: 20,
+      hasBenched: false,
+      benchStartKg: null,
+      // The injury step is gone. user_constraints and the derived joint data
+      // behind it stay, so re-asking later costs nothing.
+      flags: const [],
+      otherPain: '',
     );
 
     try {
@@ -430,24 +386,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
                   ),
                   const SizedBox(height: 12),
                 ],
-                if (_stepId == 'bar' && _benched) ...[
-                  Pressable(
-                    onTap: () => setState(() {
-                      _benched = false;
-                      _plates.clear();
-                      _step += 1;
-                    }),
-                    child: const Padding(
-                      padding: EdgeInsets.only(bottom: 12),
-                      child: Text("Never — I'm new. Skip this.",
-                          style: TextStyle(
-                              fontFamily: AppTheme.fontFamily,
-                              fontWeight: FontWeight.w500,
-                              fontSize: 11.5,
-                              color: AppColors.textFaint)),
-                    ),
-                  ),
-                ],
                 _primaryButton(
                   label: _stepId == 'review'
                       ? 'Build my week'
@@ -459,18 +397,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
                   enabled: _canAdvance,
                   onTap: _next,
                 ),
-                if (_stepId == 'map' && _flags.isEmpty && _painCtrl.text.trim().isEmpty) ...[
-                  const SizedBox(height: 12),
-                  Pressable(
-                    onTap: () => setState(() => _step += 1),
-                    child: const Text('Nothing hurts — skip',
-                        style: TextStyle(
-                            fontFamily: AppTheme.fontFamily,
-                            fontWeight: FontWeight.w500,
-                            fontSize: 11.5,
-                            color: AppColors.textFaint)),
-                  ),
-                ],
               ],
             ),
           ),
@@ -483,10 +409,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         'goal' => ('What are we chasing?', ''),
         'body' => ('Where are you starting?', ''),
         'days' => ('Which days are yours?', 'Tap the days you can actually show up. Be honest, not ambitious.'),
-        'experience' => ('How long have you trained?', 'Not a label — it just tells me how fast to add weight and how much work you can recover from.'),
-        'place' => ('Where do you train?', 'This decides which equipment I am allowed to program. I will never put a machine in your plan that you cannot reach.'),
-        'bar' => ('How heavy is your bench?', 'One honest number sets the starting load for every press. I move it after your first set, so a low guess costs nothing.'),
-        'map' => ('Anything that hurts?', "Tap it on the body. I'll program around it and warn you when a lift gets close."),
+        'setup' => ('How you train', ''),
         _ => ('Look right?', 'Tap anything to change it. Nothing is saved until you build.'),
       };
 
@@ -494,10 +417,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
         'goal' => _goalStep(),
         'body' => _bodyStep(),
         'days' => _daysStep(),
-        'experience' => _experienceStep(),
-        'place' => _placeStep(),
-        'bar' => _barStep(),
-        'map' => _mapStep(),
+        'setup' => _setupStep(),
         _ => _reviewStep(),
       };
 
@@ -622,91 +542,115 @@ class _OnboardingV2State extends State<OnboardingV2> {
 
   /// A single-select card, styled like the goal cards. Used by the experience
   /// and place steps.
-  Widget _choiceCard({
-    required String title,
-    required String sub,
+  Widget _setupStep() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _setupLabel('HOW LONG HAVE YOU TRAINED'),
+        Row(children: [
+          Expanded(child: _levelTile('Under\n6 months', 'beginner', 1)),
+          const SizedBox(width: 9),
+          Expanded(child: _levelTile('6 months\nto 2 years', 'intermediate', 2)),
+          const SizedBox(width: 9),
+          Expanded(child: _levelTile('Over\n2 years', 'advanced', 3)),
+        ]),
+        const SizedBox(height: 22),
+        _setupLabel('WHERE'),
+        Row(children: [
+          Expanded(child: _placeTile('Gym', 'commercial_gym', Icons.fitness_center_rounded)),
+          const SizedBox(width: 9),
+          Expanded(child: _placeTile('Home', 'home_gym', Icons.home_rounded)),
+          const SizedBox(width: 9),
+          Expanded(child: _placeTile('Bodyweight', 'bodyweight_only', Icons.self_improvement_rounded)),
+        ]),
+      ],
+    );
+  }
+
+  Widget _setupLabel(String text) => Padding(
+        padding: const EdgeInsets.only(left: 2, bottom: 9),
+        child: Text(text,
+            style: const TextStyle(
+                fontFamily: AppTheme.fontFamily,
+                fontWeight: FontWeight.w700,
+                fontSize: 9.5,
+                letterSpacing: 0.9,
+                color: AppColors.textFaint)),
+      );
+
+  /// Training age drawn as filled bars rather than described. "Under 6 months"
+  /// is hard to illustrate and easy to rank, so the picture is the ranking.
+  Widget _levelTile(String label, String value, int filled) {
+    final sel = _experience == value;
+    return _setupTile(
+      selected: sel,
+      label: label,
+      leading: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (var i = 1; i <= 3; i++) ...[
+            Container(
+              width: 7,
+              height: 9.0 + i * 6,
+              decoration: BoxDecoration(
+                color: i <= filled
+                    ? (sel ? AppColors.accent : AppColors.textMuted)
+                    : (sel ? AppColors.accent.withValues(alpha: 0.22) : AppColors.border),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            if (i < 3) const SizedBox(width: 3),
+          ],
+        ],
+      ),
+      onTap: () => setState(() => _experience = value),
+    );
+  }
+
+  Widget _placeTile(String label, String value, IconData icon) {
+    final sel = _environment == value;
+    return _setupTile(
+      selected: sel,
+      label: label,
+      leading: Icon(icon, size: 25, color: sel ? AppColors.accent : AppColors.textMuted),
+      onTap: () => setState(() => _environment = value),
+    );
+  }
+
+  Widget _setupTile({
     required bool selected,
+    required String label,
+    required Widget leading,
     required VoidCallback onTap,
   }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 9),
-      child: Pressable(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
-          decoration: BoxDecoration(
-            color: selected ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
-            border: Border.all(color: selected ? AppColors.accent : AppColors.border),
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(title,
-                        style: TextStyle(
-                            fontFamily: AppTheme.fontFamily,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 14.5,
-                            color: selected ? AppColors.accent : AppColors.textPrimary)),
-                    const SizedBox(height: 3),
-                    Text(sub,
-                        style: const TextStyle(
-                            fontFamily: AppTheme.fontFamily,
-                            fontSize: 11.5,
-                            height: 1.45,
-                            color: AppColors.textMuted)),
-                  ],
-                ),
-              ),
-              if (selected)
-                const Icon(Icons.check_circle, size: 20, color: AppColors.accent),
-            ],
-          ),
+    return Pressable(
+      haptic: PressFx.light,
+      onTap: onTap,
+      child: Container(
+        height: 96,
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
+          border: Border.all(color: selected ? AppColors.accent : AppColors.border),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(height: 28, child: Center(child: leading)),
+            const SizedBox(height: 10),
+            Text(label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontFamily: AppTheme.fontFamily,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 11.5,
+                    height: 1.25,
+                    color: selected ? AppColors.textPrimary : AppColors.textSecondary)),
+          ],
         ),
       ),
-    );
-  }
-
-  // ── step: experience ──────────────────────────────────────────────────────
-  Widget _experienceStep() {
-    const options = [
-      ('Under 6 months', 'beginner', 'Weight can climb almost every session.'),
-      ('6 months to 2 years', 'intermediate', 'Weight climbs across the week, not every session.'),
-      ('Over 2 years', 'advanced', 'Progress comes in blocks, with lighter weeks built in.'),
-    ];
-    return Column(
-      children: [
-        for (final (label, value, sub) in options)
-          _choiceCard(
-            title: label,
-            sub: sub,
-            selected: _experience == value,
-            onTap: () => setState(() => _experience = value),
-          ),
-      ],
-    );
-  }
-
-  // ── step: place ───────────────────────────────────────────────────────────
-  Widget _placeStep() {
-    const options = [
-      ('A commercial gym', 'commercial_gym', 'Full racks, machines and cables.'),
-      ('A home gym', 'home_gym', 'Barbell, dumbbells and a bench — no machines.'),
-      ('No equipment', 'bodyweight_only', 'Bodyweight only, wherever you are.'),
-    ];
-    return Column(
-      children: [
-        for (final (label, value, sub) in options)
-          _choiceCard(
-            title: label,
-            sub: sub,
-            selected: _environment == value,
-            onTap: () => setState(() => _environment = value),
-          ),
-      ],
     );
   }
 
@@ -1122,559 +1066,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
   }
 
   // ── step: bar ───────────────────────────────────────────────────────────
-  Widget _barStep() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (!_benched) ...[
-          Pressable(
-            onTap: () => setState(() => _benched = true),
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: AppColors.accent.withValues(alpha: 0.07),
-                border: Border.all(color: AppColors.accent.withValues(alpha: 0.35)),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.school, size: 18, color: AppColors.accent),
-                  const SizedBox(width: 9),
-                  const Expanded(
-                    child: Text(
-                        "Starting at the bar — week one is technique, and I add weight once you tell me a set felt easy.",
-                        style: TextStyle(
-                            fontFamily: AppTheme.fontFamily,
-                            fontSize: 11.5,
-                            height: 1.5,
-                            color: AppColors.textSecondary)),
-                  ),
-                  const SizedBox(width: 8),
-                  const Text('Undo',
-                      style: TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 11,
-                          color: AppColors.accent)),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-        ],
-        Text(_benched ? 'YOUR BAR' : 'WHICH BAR DOES YOUR GYM HAVE?',
-            style: const TextStyle(
-                fontFamily: AppTheme.fontFamily,
-                fontSize: 10.5,
-                letterSpacing: 0.6,
-                color: AppColors.textFaint)),
-        const SizedBox(height: 11),
-        Row(
-          children: [
-            _barType('full length', 20),
-            const SizedBox(width: 8),
-            _barType('short', 15),
-            const SizedBox(width: 8),
-            _barType('fixed', 10),
-            const SizedBox(width: 8),
-            _barType('training', 5),
-          ],
-        ),
-        const SizedBox(height: 14),
-        _barVisual(),
-        if (_benched) ...[
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 7,
-            runSpacing: 7,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              for (final p in _plateCatalog) _plateAddBtn(p),
-              _smallRound(Icons.undo, () {
-                if (_plates.isNotEmpty) setState(() => _plates.removeLast());
-              }),
-              Pressable(
-                onTap: () => setState(_plates.clear),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                  decoration: BoxDecoration(
-                      color: AppColors.page,
-                      border: Border.all(color: AppColors.border),
-                      borderRadius: BorderRadius.circular(20)),
-                  child: const Text('Strip it',
-                      style: TextStyle(
-                          fontFamily: AppTheme.fontFamily,
-                          fontWeight: FontWeight.w500,
-                          fontSize: 11.5,
-                          color: AppColors.textMuted)),
-                ),
-              ),
-            ],
-          ),
-        ],
-        const SizedBox(height: 16),
-        Text(
-            !_benched
-                ? 'Bench is the reference lift the plan scales from. Since you have not benched, I set it from your first real sets instead of asking you to guess.'
-                : _plates.isNotEmpty
-                    ? 'Bench is the reference lift — presses scale from it. I move it after your first set, so this only has to be close.'
-                    : 'The bare bar is a real answer: leave it empty and I start you there.',
-            style: const TextStyle(
-                fontFamily: AppTheme.fontFamily,
-                fontSize: 11,
-                height: 1.55,
-                color: AppColors.textFaint)),
-      ],
-    );
-  }
-
-  Widget _barType(String sub, double kg) {
-    final sel = _barKg == kg;
-    return Expanded(
-      child: Pressable(
-        onTap: () => setState(() => _barKg = kg),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(8, 13, 8, 11),
-          decoration: BoxDecoration(
-            color: sel ? AppColors.accent.withValues(alpha: 0.09) : AppColors.surface,
-            border: Border.all(color: sel ? AppColors.accent : AppColors.border),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Column(
-            children: [
-              Container(
-                width: kg == 20 ? 44 : kg == 15 ? 34 : 24,
-                height: 4,
-                decoration: BoxDecoration(
-                    color: sel ? AppColors.accent : AppColors.textFaint,
-                    borderRadius: BorderRadius.circular(2)),
-              ),
-              const SizedBox(height: 9),
-              Text.rich(TextSpan(children: [
-                TextSpan(
-                    text: _n(kg),
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 13,
-                        color: sel ? AppColors.accent : AppColors.textPrimary)),
-                const TextSpan(
-                    text: ' kg',
-                    style: TextStyle(
-                        fontFamily: AppTheme.fontFamily,
-                        fontSize: 9.5,
-                        color: AppColors.textMuted)),
-              ])),
-              const SizedBox(height: 2),
-              Text(sub,
-                  style: const TextStyle(
-                      fontFamily: AppTheme.fontFamily,
-                      fontSize: 9.5,
-                      color: AppColors.textFaint)),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _barVisual() {
-    // Heavy → light; heavy plates load nearest the collar.
-    final sorted = [..._plates]..sort((a, b) => b.compareTo(a));
-    final ratio = ((_benchTotal - _barKg) / 80).clamp(0.0, 1.0);
-
-    // One plate that scales up on the vertical when it first appears.
-    Widget plate(double p, String side, int idx) {
-      final h = switch (p) {
-        20.0 => 88.0,
-        10.0 => 70.0,
-        5.0 => 54.0,
-        2.5 => 42.0,
-        _ => 32.0,
-      };
-      final w = switch (p) {
-        20.0 => 15.0,
-        10.0 => 13.0,
-        5.0 => 11.0,
-        2.5 => 9.0,
-        _ => 8.0,
-      };
-      return TweenAnimationBuilder<double>(
-        key: ValueKey('pl-$side-$idx-$p'),
-        tween: Tween(begin: 0.25, end: 1.0),
-        duration: const Duration(milliseconds: 260),
-        curve: Curves.easeOutBack,
-        builder: (_, v, child) =>
-            Transform(alignment: Alignment.center, transform: Matrix4.diagonal3Values(1, v.clamp(0.0, 1.0), 1), child: child),
-        child: Container(
-          width: w,
-          height: h,
-          margin: const EdgeInsets.symmetric(horizontal: 1),
-          decoration: BoxDecoration(
-            color: _plateColorFor(p),
-            borderRadius: BorderRadius.circular(3),
-            boxShadow: const [
-              BoxShadow(color: Color(0x40000000), offset: Offset(-1, 0), blurRadius: 1),
-            ],
-          ),
-        ),
-      );
-    }
-
-    Widget collar() => Container(
-        width: 6,
-        height: 22,
-        margin: const EdgeInsets.symmetric(horizontal: 1),
-        decoration: BoxDecoration(
-            color: AppColors.inactiveFill, borderRadius: BorderRadius.circular(2)));
-    Widget endcap() => Container(
-        width: 5,
-        height: 14,
-        decoration: BoxDecoration(
-            color: AppColors.textFaint, borderRadius: BorderRadius.circular(2)));
-
-    // Knurled centre shaft.
-    Widget shaft() => Container(
-          width: 92,
-          height: 7,
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFFB0A49B), Color(0xFF3A3532)]),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              for (var k = 0; k < 2; k++)
-                Container(
-                  width: 22,
-                  height: 7,
-                  margin: const EdgeInsets.symmetric(horizontal: 3),
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Color(0x996E655F), Color(0x00000000)],
-                      stops: [0.5, 0.5],
-                      tileMode: TileMode.repeated,
-                      begin: Alignment(-1, 0),
-                      end: Alignment(-0.9, 0),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        );
-
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 18, 12, 16),
-      decoration: BoxDecoration(
-          color: AppColors.surface,
-          border: Border.all(color: AppColors.border),
-          borderRadius: BorderRadius.circular(20)),
-      child: Column(
-        children: [
-          SizedBox(
-            height: 108,
-            child: Center(
-              // The loaded bar sags a touch under weight.
-              child: AnimatedSlide(
-                offset: Offset(0, ratio * 0.06),
-                duration: const Duration(milliseconds: 400),
-                curve: const Cubic(0.34, 1.5, 0.64, 1),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    // left plate group bends outward under load
-                    Transform.rotate(
-                      angle: -ratio * 0.06,
-                      alignment: Alignment.centerRight,
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        endcap(),
-                        for (var i = sorted.length - 1; i >= 0; i--)
-                          plate(sorted[i], 'l', i),
-                      ]),
-                    ),
-                    collar(),
-                    shaft(),
-                    collar(),
-                    Transform.rotate(
-                      angle: ratio * 0.06,
-                      alignment: Alignment.centerLeft,
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        for (var i = 0; i < sorted.length; i++)
-                          plate(sorted[i], 'r', i),
-                        endcap(),
-                      ]),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text.rich(TextSpan(children: [
-            TextSpan(
-                text: _n(_benchTotal),
-                style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 32,
-                    color: AppColors.textPrimary)),
-            const TextSpan(
-                text: ' kg',
-                style: TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontSize: 12.5,
-                    color: AppColors.textMuted)),
-          ])),
-          const SizedBox(height: 4),
-          Text(
-              _plates.isEmpty
-                  ? 'empty bar, ${_n(_barKg)} kg'
-                  : 'bar ${_n(_barKg)} + ${_plates.map(_n).join(' + ')} per side',
-              style: const TextStyle(
-                  fontFamily: AppTheme.fontFamily,
-                  fontSize: 11,
-                  color: AppColors.textFaint)),
-        ],
-      ),
-    );
-  }
-
-  Widget _plateAddBtn(double p) {
-    return Pressable(
-      onTap: () => setState(() => _plates.add(p)),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(9, 8, 13, 8),
-        decoration: BoxDecoration(
-            color: AppColors.surface,
-            border: Border.all(color: AppColors.border),
-            borderRadius: BorderRadius.circular(20)),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 9,
-              height: switch (p) {
-                20.0 => 24.0,
-                10.0 => 19.0,
-                5.0 => 15.0,
-                2.5 => 11.0,
-                _ => 8.0,
-              },
-              decoration: BoxDecoration(
-                  color: _plateColorFor(p), borderRadius: BorderRadius.circular(2)),
-            ),
-            const SizedBox(width: 8),
-            Text('+ ${_n(p)}',
-                style: const TextStyle(
-                    fontFamily: AppTheme.fontFamily,
-                    fontWeight: FontWeight.w500,
-                    fontSize: 12,
-                    color: AppColors.textPrimary)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ── step: map ─────────────────────────────────────────────────────────────
-  Widget _mapStep() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Center(
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _viewTab('Front', 'front'),
-              const SizedBox(width: 6),
-              _viewTab('Back', 'back'),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        _bodyMap(),
-        const SizedBox(height: 14),
-        Text(
-            _flags.isEmpty
-                ? 'Tap a dot. Left and right are separate — check both views. Most people tap nothing.'
-                : 'Flagged ${_flags.length}: tap a chip to clear it, or switch view for the other side.',
-            style: const TextStyle(
-                fontFamily: AppTheme.fontFamily,
-                fontSize: 11.5,
-                height: 1.5,
-                color: AppColors.textMuted)),
-        if (_flags.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 7,
-            runSpacing: 7,
-            children: [
-              for (final f in _flags)
-                Pressable(
-                  onTap: () => setState(() => _flags.removeWhere((x) => x.key == f.key)),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                        color: AppColors.warn.withValues(alpha: 0.14),
-                        border: Border.all(color: AppColors.warn),
-                        borderRadius: BorderRadius.circular(20)),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(f.label,
-                            style: const TextStyle(
-                                fontFamily: AppTheme.fontFamily,
-                                fontWeight: FontWeight.w500,
-                                fontSize: 11.5,
-                                color: AppColors.warn)),
-                        const SizedBox(width: 6),
-                        const Icon(Icons.close, size: 14, color: AppColors.warn),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ],
-        const SizedBox(height: 16),
-        const Text('IN YOUR OWN WORDS, IF IT HELPS',
-            style: TextStyle(
-                fontFamily: AppTheme.fontFamily,
-                fontSize: 10.5,
-                letterSpacing: 0.6,
-                color: AppColors.textFaint)),
-        const SizedBox(height: 8),
-        TextField(
-          controller: _painCtrl,
-          maxLines: 2,
-          onChanged: (_) => setState(() {}),
-          style: const TextStyle(
-              fontFamily: AppTheme.fontFamily,
-              fontSize: 12.5,
-              height: 1.5,
-              color: AppColors.textPrimary),
-          decoration: const InputDecoration(
-            hintText: 'Anything the map missed — a stiff morning, an old surgery, a movement you avoid',
-            fillColor: AppColors.surface,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _viewTab(String label, String v) {
-    final sel = _view == v;
-    return Pressable(
-      onTap: () => setState(() => _view = v),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-        decoration: BoxDecoration(
-            color: sel ? AppColors.accent : AppColors.surface,
-            borderRadius: BorderRadius.circular(20)),
-        child: Text(label,
-            style: TextStyle(
-                fontFamily: AppTheme.fontFamily,
-                fontWeight: FontWeight.w500,
-                fontSize: 11.5,
-                color: sel ? AppColors.onAccent : AppColors.textMuted)),
-      ),
-    );
-  }
-
-  Widget _bodyMap() {
-    JointV2? jointFor(String slug) {
-      for (final j in _joints) {
-        if (j.slug == slug) return j;
-      }
-      return null;
-    }
-
-    final geo = _view == 'front' ? _frontGeo : _backGeo;
-
-    return LayoutBuilder(builder: (context, c) {
-      final w = c.maxWidth;
-      const h = 300.0;
-      final cx = w / 2;
-
-      // Nodes from the design geometry, so they land on the silhouette in both
-      // views. Absolute px in the 300-tall map.
-      final nodes = <({JointV2 j, String side, double x, double y})>[];
-      geo.forEach((slug, g) {
-        final j = jointFor(slug);
-        if (j == null) return;
-        final (top, dx, lateral) = g;
-        if (lateral) {
-          nodes.add((j: j, side: 'right', x: cx + dx, y: top));
-          nodes.add((j: j, side: 'left', x: cx - dx, y: top));
-        } else {
-          nodes.add((j: j, side: 'bilateral', x: cx, y: top));
-        }
-      });
-
-      Widget block(double left, double top, double bw, double bh, double r) =>
-          Positioned(
-            left: left,
-            top: top,
-            child: Container(
-              width: bw,
-              height: bh,
-              decoration: BoxDecoration(
-                  color: AppColors.border, borderRadius: BorderRadius.circular(r)),
-            ),
-          );
-      return Container(
-        height: h,
-        decoration: BoxDecoration(
-            color: AppColors.surface,
-            border: Border.all(color: AppColors.border),
-            borderRadius: BorderRadius.circular(20)),
-        child: Stack(
-          children: [
-            // silhouette
-            block(cx - 17, 18, 34, 34, 17), // head
-            block(cx - 12, 52, 24, 12, 4), // neck
-            block(cx - 33, 62, 66, 88, 14), // torso
-            block(cx - 29, 148, 58, 26, 8), // hips
-            block(cx - 52, 66, 18, 88, 9), // left arm
-            block(cx + 34, 66, 18, 88, 9), // right arm
-            block(cx - 26, 172, 22, 104, 11), // left leg
-            block(cx + 4, 172, 22, 104, 11), // right leg
-            for (final n in nodes)
-              Positioned(
-                left: n.x - 16,
-                top: n.y - 16,
-                child: Pressable(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() {
-                    final key = '${n.j.id}|${n.side}';
-                    if (_flags.any((f) => f.key == key)) {
-                      _flags.removeWhere((f) => f.key == key);
-                    } else {
-                      _flags.add(OnboardingFlag(
-                          jointId: n.j.id, jointName: n.j.name, side: n.side));
-                    }
-                  }),
-                  child: SizedBox(
-                    width: 32,
-                    height: 32,
-                    child: Center(
-                      child: _MapDot(
-                        on: _flags.any((f) => f.key == '${n.j.id}|${n.side}'),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      );
-    });
-  }
-
-  // ── step: review ──────────────────────────────────────────────────────────
   Widget _reviewStep() {
     final tiles = <({String label, String value, int step, IconData icon, int span, bool warm})>[
       (
@@ -1707,7 +1098,7 @@ class _OnboardingV2State extends State<OnboardingV2> {
           'advanced' => 'Over 2 years',
           _ => 'Not picked',
         },
-        step: _steps.indexOf('experience'),
+        step: _steps.indexOf('setup'),
         icon: Icons.timeline_outlined,
         span: 1,
         warm: false
@@ -1720,27 +1111,13 @@ class _OnboardingV2State extends State<OnboardingV2> {
           'bodyweight_only' => 'No equipment',
           _ => 'Not picked',
         },
-        step: _steps.indexOf('place'),
+        step: _steps.indexOf('setup'),
         icon: Icons.place_outlined,
         span: 1,
         warm: false
       ),
-      (label: 'Bench start', value: _benched ? '${_n(_benchTotal)} kg' : 'Bar only', step: _steps.indexOf('bar'), icon: Icons.fitness_center, span: 1, warm: false),
       (label: 'Split', value: _splitLabel(), step: _steps.indexOf('days'), icon: Icons.view_week_outlined, span: 2, warm: false),
       (label: 'Protein', value: '${(_bw * 1.8).round()} g a day', step: _steps.indexOf('body'), icon: Icons.restaurant, span: 2, warm: false),
-      (
-        label: 'Working around',
-        value: (_flags.isNotEmpty || _painCtrl.text.trim().isNotEmpty)
-            ? [
-                _flags.map((f) => f.label).join(', '),
-                _painCtrl.text.trim(),
-              ].where((x) => x.isNotEmpty).join(' · ')
-            : 'Nothing flagged',
-        step: _steps.indexOf('map'),
-        icon: Icons.healing_outlined,
-        span: 2,
-        warm: _flags.isNotEmpty || _painCtrl.text.trim().isNotEmpty
-      ),
     ];
     return Wrap(
       spacing: 9,
@@ -1882,19 +1259,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
     );
   }
 
-  Widget _smallRound(IconData icon, VoidCallback onTap) => Pressable(
-        onTap: onTap,
-        child: Container(
-          width: 38,
-          height: 38,
-          decoration: BoxDecoration(
-              color: AppColors.page,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.border)),
-          child: Icon(icon, size: 17, color: AppColors.textMuted),
-        ),
-      );
-
   Widget _leftAccentBox({String? title, required String body}) => Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 13),
@@ -1947,27 +1311,6 @@ class _OnboardingV2State extends State<OnboardingV2> {
         ),
       );
 
-  static String _n(double v) =>
-      v == v.roundToDouble() ? v.toStringAsFixed(0) : v.toStringAsFixed(2).replaceFirst(RegExp(r'0$'), '');
-}
-
-class _MapDot extends StatelessWidget {
-  final bool on;
-  const _MapDot({required this.on});
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
-      width: on ? 16 : 11,
-      height: on ? 16 : 11,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: on ? AppColors.warn : AppColors.textPrimary.withValues(alpha: 0.22),
-        border: Border.all(
-            color: on ? AppColors.warn : AppColors.textPrimary.withValues(alpha: 0.35)),
-      ),
-    );
-  }
 }
 
 class _RisingBars extends StatefulWidget {
