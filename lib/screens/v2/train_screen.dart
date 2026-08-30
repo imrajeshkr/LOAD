@@ -736,29 +736,65 @@ class _WeekCalendarState extends State<_WeekCalendar> {
   /// is the same operation as turning Sunday's Push into Legs.
   bool _canPick(WeekDayV2 d) => _movable(d);
 
-  /// Short, unique names for the picker. `_tag` collapses "Push Day A" and
-  /// "Push Day B" to the same PUSH, which is fine on a calendar chip and
-  /// useless in a list where you must tell them apart, so a suffix is added
-  /// only where one is actually needed.
-  List<({ProgramDayOptionV2? opt, String tag})> get _choices {
-    final tags = <String, int>{};
-    for (final o in widget.options) {
-      final t = _WeekCalendar._tag(o.label);
-      tags[t] = (tags[t] ?? 0) + 1;
-    }
-    final seen = <String, int>{};
+  /// What a day can be changed to: the session *kinds* in this split, minus
+  /// the one it already is.
+  ///
+  /// The A/B in "Push Day B" is real — a four-day PPL cycle repeats, so the
+  /// fourth day is a second push session the generator populated separately —
+  /// but it is bookkeeping, and putting PUSH A next to PUSH B in a menu asks
+  /// the lifter to care about it. They pick PUSH; which variant lands is
+  /// [_variantFor]'s problem.
+  List<({ProgramDayOptionV2? opt, String tag})> _choicesFor(WeekDayV2 day) {
+    final current = day.isRest ? 'REST' : _kindOf(day.label ?? '');
+    final seen = <String>{};
     final out = <({ProgramDayOptionV2? opt, String tag})>[];
     for (final o in widget.options) {
-      final t = _WeekCalendar._tag(o.label);
-      if ((tags[t] ?? 0) > 1) {
-        final n = seen[t] = (seen[t] ?? 0) + 1;
-        out.add((opt: o, tag: '$t ${String.fromCharCode(64 + n)}'));
-      } else {
-        out.add((opt: o, tag: t));
+      final k = _kindOf(o.label);
+      if (k == current || !seen.add(k)) continue;
+      out.add((opt: _variantFor(k, day), tag: k));
+    }
+    if (current != 'REST') out.add((opt: null, tag: 'REST'));
+    return out;
+  }
+
+  /// "Push Day B" -> PUSH. Strips the rotation suffix before tagging, so the
+  /// variants of one kind collapse onto each other.
+  static String _kindOf(String label) {
+    var s = label.trim();
+    // A trailing single letter is the A/B/C the generator appends when the
+    // cycle repeats inside one week.
+    if (s.length > 2 && s[s.length - 2] == ' ') {
+      final last = s[s.length - 1].toUpperCase();
+      if (last.codeUnitAt(0) >= 65 && last.codeUnitAt(0) <= 90) {
+        s = s.substring(0, s.length - 2);
       }
     }
-    out.add((opt: null, tag: 'REST'));
-    return out;
+    final l = s.toLowerCase();
+    if (l.startsWith('push')) return 'PUSH';
+    if (l.startsWith('pull')) return 'PULL';
+    if (l.startsWith('leg')) return 'LEGS';
+    if (l.startsWith('upper')) return 'UPPER';
+    if (l.startsWith('lower')) return 'LOWER';
+    if (l.startsWith('full')) return 'FULL';
+    return s.toUpperCase();
+  }
+
+  /// Which variant of a kind to schedule. The one used least in the week
+  /// already, so picking PUSH twice gives Push A then Push B rather than the
+  /// same session twice — the alternation the generator built them for.
+  ProgramDayOptionV2? _variantFor(String kind, WeekDayV2 exclude) {
+    final pool = widget.options.where((o) => _kindOf(o.label) == kind).toList();
+    if (pool.isEmpty) return null;
+    final used = <String, int>{};
+    for (final d in widget.week) {
+      if (_same(d.date, exclude.date) || d.programDayId == null) continue;
+      used[d.programDayId!] = (used[d.programDayId!] ?? 0) + 1;
+    }
+    pool.sort((a, b) {
+      final c = (used[a.id] ?? 0).compareTo(used[b.id] ?? 0);
+      return c != 0 ? c : a.ordinal.compareTo(b.ordinal);
+    });
+    return pool.first;
   }
 
   static bool _same(DateTime a, DateTime b) =>
@@ -812,7 +848,7 @@ class _WeekCalendarState extends State<_WeekCalendar> {
                     selected: widget.selected != null && _same(d.date, widget.selected!),
                     canPick: _canPick(d),
                     pickerOpen: _pickerOn != null && _same(d.date, _pickerOn!),
-                    choices: _choices,
+                    choices: _choicesFor(d),
                     onTap: () => widget.onTapDay(d),
                     onPickerOpen: () => setState(() => _pickerOn = d.date),
                     onPickerClose: () => setState(() => _pickerOn = null),
@@ -830,7 +866,7 @@ class _WeekCalendarState extends State<_WeekCalendar> {
               const SizedBox(width: 4),
               const Expanded(
                 child: Text(
-                    'Hold a day to change it · tap a day ahead to see it',
+                    'Hold a day, slide to change it · tap a day ahead to see it',
                     style: TextStyle(
                         fontFamily: AppTheme.fontFamily,
                         fontSize: 9.5,
@@ -846,12 +882,19 @@ class _WeekCalendarState extends State<_WeekCalendar> {
 
 /// One chip: tap previews the day, hold opens the picker.
 ///
-/// Hold-then-slide-then-lift, the iOS context-menu gesture: the finger never
-/// leaves the glass, the chip itself does not move (so the week stays readable
-/// while you choose), and lifting outside every option cancels. Built from
+/// Hold-then-slide-then-lift: the finger never leaves the glass, the chip
+/// itself does not move (so the week stays readable while you choose), and
+/// lifting outside the options cancels. Built from
 /// onLongPress{Start,MoveUpdate,End} rather than a menu widget because the
 /// highlight has to track the finger continuously for the slide to feel like
 /// one motion instead of two taps.
+///
+/// Selection reads the finger's X only, never its Y. Sliding *onto* the menu
+/// would put the hand over the very options it is choosing between, so the
+/// menu sits above the chip and the finger stays down on the day row, moving
+/// left and right underneath it. The highlighted pill is always the one
+/// directly above the fingertip, so the mapping is still spatial — you just
+/// never have to reach for it.
 class _CalendarDay extends StatefulWidget {
   final WeekDayV2 day;
   final String tag;
@@ -887,6 +930,14 @@ class _CalendarDayState extends State<_CalendarDay> {
   OverlayEntry? _entry;
   int _hot = -1;
   final _slots = <Rect>[];
+  Offset _origin = Offset.zero;
+  Rect _anchor = Rect.zero;
+
+  /// Nothing is selected until the finger has actually travelled. Because the
+  /// day's current session is no longer offered, there is no safe default to
+  /// land on — so a hold-and-release must mean "never mind", not "commit
+  /// whatever column my thumb happened to be in".
+  bool _moved = false;
 
   @override
   void dispose() {
@@ -895,18 +946,17 @@ class _CalendarDayState extends State<_CalendarDay> {
     super.dispose();
   }
 
-  void _open() {
+  void _open(Offset globalPress) {
     if (widget.choices.isEmpty) return;
     final box = _chipKey.currentContext?.findRenderObject() as RenderBox?;
     final overlay = Overlay.of(context).context.findRenderObject() as RenderBox?;
     if (box == null || overlay == null) return;
     final origin = box.localToGlobal(Offset.zero, ancestor: overlay);
-
-    // The current session starts highlighted, so lifting straight away is a
-    // no-op rather than a silent change to whatever sat under the finger.
-    final currentId = widget.day.programDayId;
-    _hot = widget.choices.indexWhere((c) => c.opt?.id == currentId);
-    if (_hot < 0) _hot = widget.choices.indexWhere((c) => c.opt == null);
+    _anchor = Rect.fromLTWH(
+        origin.dx, origin.dy, box.size.width, box.size.height);
+    _origin = globalPress;
+    _hot = -1;
+    _moved = false;
 
     Haptics.selection();
     widget.onPickerOpen();
@@ -914,8 +964,7 @@ class _CalendarDayState extends State<_CalendarDay> {
       builder: (_) => _DayPickerOverlay(
         choices: widget.choices,
         hot: _hot,
-        anchor: Rect.fromLTWH(
-            origin.dx, origin.dy, box.size.width, box.size.height),
+        anchor: _anchor,
         screen: overlay.size,
         onLaidOut: (rects) {
           _slots
@@ -929,13 +978,20 @@ class _CalendarDayState extends State<_CalendarDay> {
 
   void _track(Offset global) {
     if (_entry == null || _slots.isEmpty) return;
+    if (!_moved) {
+      if ((global - _origin).distance < 12) return;
+      _moved = true;
+    }
     var hit = -1;
-    for (var i = 0; i < _slots.length; i++) {
-      // Generous vertically: the finger drifts on the way up, and losing the
-      // highlight because you overshot by six pixels feels broken.
-      if (_slots[i].inflate(14).contains(global)) {
-        hit = i;
-        break;
+    // Drag well clear of the row and the gesture is abandoned: a deliberate
+    // way out that does not require finding a gap between two pills.
+    if (global.dy < _anchor.bottom + 150) {
+      for (var i = 0; i < _slots.length; i++) {
+        // X only. The finger stays on the day row; the pill above it lights up.
+        if (global.dx >= _slots[i].left - 3 && global.dx <= _slots[i].right + 3) {
+          hit = i;
+          break;
+        }
       }
     }
     if (hit != _hot) {
@@ -951,10 +1007,10 @@ class _CalendarDayState extends State<_CalendarDay> {
     _entry = null;
     _slots.clear();
     _hot = -1;
+    _moved = false;
     widget.onPickerClose();
     if (!commit || hot < 0 || hot >= widget.choices.length) return;
     final pick = widget.choices[hot];
-    if (pick.opt?.id == widget.day.programDayId) return; // nothing changed
     Haptics.success();
     widget.onPick(pick.opt);
   }
@@ -980,7 +1036,7 @@ class _CalendarDayState extends State<_CalendarDay> {
     // Pressable for the press-scale and haptic.
     return GestureDetector( // interactivity-ok
       behavior: HitTestBehavior.opaque,
-      onLongPressStart: (_) => _open(),
+      onLongPressStart: (d) => _open(d.globalPosition),
       onLongPressMoveUpdate: (d) => _track(d.globalPosition),
       onLongPressEnd: (_) => _close(commit: true),
       onLongPressCancel: () => _close(),
@@ -1012,7 +1068,7 @@ class _DayPickerOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const pillW = 62.0, pillH = 40.0, gap = 6.0, pad = 8.0;
+    const pillW = 74.0, pillH = 42.0, gap = 6.0, pad = 8.0;
     final w = choices.length * pillW + (choices.length - 1) * gap + pad * 2;
     // Centred on the chip, then pushed back inside the screen — Sunday's chip
     // sits at the right edge and would otherwise hang off it.
