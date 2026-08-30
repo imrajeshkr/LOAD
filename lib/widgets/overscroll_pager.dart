@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../services/haptics.dart';
 import '../theme/app_colors.dart';
@@ -66,11 +67,20 @@ class _OverscrollPagerState extends State<OverscrollPager>
   /// Signed pull in logical pixels. Positive = dragging the NEXT lift up.
   double _drag = 0;
 
-  /// The furthest the pull reached during this gesture. Settling on the peak
-  /// rather than the release value matters because iOS springs the list back
-  /// before the gesture ends — by the time the finger lifts, the live value
-  /// has already decayed toward zero and would never clear the threshold.
-  double _peak = 0;
+  /// The pull as of the last update the *finger* caused.
+  ///
+  /// This used to settle on the furthest the pull ever reached, to survive
+  /// iOS springing the list back before the gesture ended. It over-corrected:
+  /// a peak that only ever grows cannot tell "the physics decayed it" from
+  /// "the lifter pulled back because they changed their mind", so dragging
+  /// back to neutral still turned the page. Worse, the peak tracked the
+  /// largest magnitude in *either* direction, so pulling up and then further
+  /// down flipped it negative and jumped to the previous lift.
+  ///
+  /// Reading dragDetails separates the two properly: it is non-null only
+  /// while the finger is driving, so the spring-back is ignored without
+  /// having to guess, and this value is simply where the lifter left it.
+  double _userDrag = 0;
 
   /// Overscroll accumulated from notifications, for any scrollable below us
   /// that still runs clamping physics. Zeroed the moment the list is back
@@ -97,9 +107,9 @@ class _OverscrollPagerState extends State<OverscrollPager>
 
   void _settle(double height) {
     final threshold = height * widget.snapFraction;
-    final goNext = _peak > threshold && _canNext;
-    final goPrev = _peak < -threshold && _canPrev;
-    _peak = 0;
+    final goNext = _userDrag > threshold && _canNext;
+    final goPrev = _userDrag < -threshold && _canPrev;
+    _userDrag = 0;
     _accum = 0;
     _armed = false;
 
@@ -136,18 +146,38 @@ class _OverscrollPagerState extends State<OverscrollPager>
             final m = n.metrics;
 
             if (n is ScrollStartNotification) {
-              _peak = 0;
+              _userDrag = 0;
               _accum = 0;
               _armed = false;
               return false;
             }
 
-            if (n is OverscrollNotification) _accum += n.overscroll;
-
-            if (n is ScrollEndNotification) {
-              if (_drag != 0 || _peak != 0) _settle(h);
+            // The finger has come off. Settle now rather than waiting for
+            // ScrollEndNotification, which on iOS only arrives once the
+            // spring-back animation has finished — a visible pause with the
+            // page held open.
+            if (n is UserScrollNotification &&
+                n.direction == ScrollDirection.idle) {
+              if (_drag != 0) _settle(h);
               return false;
             }
+
+            if (n is ScrollEndNotification) {
+              if (_drag != 0) _settle(h);
+              return false;
+            }
+
+            // Only the finger moves the page. Momentum and the bounce-back
+            // are the scroll view's business, and letting them write here is
+            // what made a deliberate change of mind unreportable.
+            final driving = switch (n) {
+              ScrollUpdateNotification u => u.dragDetails != null,
+              OverscrollNotification o => o.dragDetails != null,
+              _ => false,
+            };
+            if (!driving) return false;
+
+            if (n is OverscrollNotification) _accum += n.overscroll;
 
             // How far the list has been dragged past an edge. Positive past
             // the bottom (pulling the next lift up), negative past the top.
@@ -170,8 +200,8 @@ class _OverscrollPagerState extends State<OverscrollPager>
 
             if (allowed != _drag) {
               _drag = allowed;
-              if (allowed.abs() > _peak.abs()) _peak = allowed;
-              final armed = _peak.abs() > h * widget.snapFraction;
+              _userDrag = allowed;
+              final armed = allowed.abs() > h * widget.snapFraction;
               if (armed != _armed) {
                 _armed = armed;
                 Haptics.selection();
